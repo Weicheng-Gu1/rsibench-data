@@ -30,6 +30,15 @@ FIELDS = (
     "task_agent_usd_A0",
     "task_agent_usd_AT",
     "meta_agent_usd",
+    "module_ablation_task_agent_tokens",
+    "module_ablation_task_agent_usd",
+    "shared_module_ablation_task_agent_tokens",
+    "shared_module_ablation_task_agent_usd",
+    "pi_source_module_ablation_task_agent_tokens",
+    "pi_source_module_ablation_task_agent_usd",
+    "legacy_pi_workspace_component_scores",
+    "shared_resources_component_scores",
+    "pi_core_source_component_scores",
     "artifact_path",
 )
 
@@ -55,6 +64,16 @@ def row_from_manifest(path: Path) -> dict[str, object]:
     for field in FIELDS:
         if field not in row:
             row[field] = score.get(field)
+    layers = (manifest.get("ablations") or {}).get("layers") or {}
+    for layer in (
+        "legacy_pi_workspace",
+        "shared_resources",
+        "pi_core_source",
+    ):
+        payload = layers.get(layer) or {}
+        row[f"{layer}_component_scores"] = json.dumps(
+            payload.get("component_scores") or {}, sort_keys=True
+        )
     return row
 
 
@@ -64,7 +83,7 @@ def main() -> int:
     rows.sort(key=lambda row: (str(row["subset"]), str(row["model"]), str(row["harness"]), str(row["run_id"])))
     LEADERBOARD.mkdir(parents=True, exist_ok=True)
     with (LEADERBOARD / "results.csv").open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer = csv.DictWriter(handle, fieldnames=FIELDS, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
     with (LEADERBOARD / "results.jsonl").open("w") as handle:
@@ -76,4 +95,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -14,4 +14,7 @@ For terminal runs, preserve every ablation directory emitted by RSIBench. Do
 not split variants into independent submissions. The parent trajectory
 manifest indexes shared resources and, for Pi source mode, core source. A
 completed layer includes its results and raw `trials/`; unchanged modules are
-recorded as reused Full and must not have fabricated rollout trajectories.
+recorded in `skipped_unchanged_modules` and must not have fabricated rollout
+trajectories. New submissions use `keep_one_changed_module`: every reported
+component score is `A0` plus that component alone, with all other editable
+components restored to `A0`.
