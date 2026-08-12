@@ -21,6 +21,14 @@ trajectories/
       splits.resolved.json
       provenance.json
       training-schedule.json
+      shared-module-ablation/          # terminal, changed SHARED_* only
+        harnesses/manifest.json
+        results.json
+        results.csv
+        trials/
+      pi-source-module-ablation/       # terminal Pi source, changed PI_SRC_* only
+        results.json
+        trials/
       ... complete run artifacts ...
 leaderboard/
   results.csv
@@ -44,6 +52,13 @@ Only completed, paper-valid runs without unresolved infrastructure errors are
 accepted by default. Credentials, transient PID files, and local absolute paths
 are rejected before commit.
 
+Module ablations belong to the same immutable run, not separate leaderboard
+runs. They are produced only for `terminal`. Claude Code and Codex may contain
+changed `SHARED_*` variants; Pi source runs may additionally contain changed
+`PI_SRC_*` variants. Unchanged modules reuse Full and have no extra rollout
+directory. `trajectory-manifest.json.ablations` indexes every applicable layer,
+while each layer's `trials/` retains its raw task-agent trajectories.
+
 ## Rebuild The Leaderboard
 
 ```bash
@@ -53,4 +68,3 @@ git diff --check
 
 `leaderboard/results.csv` and `leaderboard/results.jsonl` are derived indexes.
 The immutable run manifest and raw artifacts remain the source of truth.
-
