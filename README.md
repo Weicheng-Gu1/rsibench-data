@@ -44,9 +44,19 @@ The source repository publishes one complete run with:
 ```bash
 python scripts/collab-experiments/publish_trajectory.py \
   --run-id "$RUN_ID" \
+  --expect-bench "$BENCH" \
+  --expect-model "$MODEL" \
+  --expect-harness "$HARNESS" \
   --trajectory-repo /path/to/rsibench-data \
   --push
 ```
+
+`run-id` is only the unique run instance. Experiment identity is the explicit
+tuple `(bench, model, harness, run-id)`: the publisher verifies the first three
+expectations against `result.json`, writes all four into
+`trajectory-manifest.json`, archives under
+`trajectories/<bench>-<model>-<harness>/<run-id>/`, and repeats them in the
+leaderboard indexes.
 
 Only completed, paper-valid runs without unresolved infrastructure errors are
 accepted by default. Credentials, transient PID files, and local absolute paths
@@ -61,6 +71,8 @@ modules are recorded in `skipped_unchanged_modules` and consume no rollout.
 `trajectory-manifest.json.ablations` indexes every applicable layer and exposes
 compact `component_scores`; each layer's `results.json` and `trials/` retain the
 complete scores, token/cost accounting, and raw task-agent trajectories.
+Component scores are absolute `Only(Mi)` scores; new records do not calculate
+`Only(Mi)-A0` or `A*-Only(Mi)`.
 
 ## Rebuild The Leaderboard
 
