@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""Shared validation and indexing helpers for GitHub-authenticated submissions."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+from pathlib import Path
+from typing import Any, Iterable
+
+
+TRAJECTORY_MANIFEST = "trajectory-manifest.json"
+RECEIPT_ROOT = Path("submissions/github")
+TRUSTED_INDEX = Path("leaderboard/submissions.json")
+DERIVED_INDEXES = {
+    Path("leaderboard/results.csv"),
+    Path("leaderboard/results.jsonl"),
+    TRUSTED_INDEX,
+}
+IDENTITY_KEYS = {
+    "github_login",
+    "github_user_id",
+    "pull_request",
+    "merge_commit",
+    "submission_receipt",
+    "submitted_by_github",
+}
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot read JSON {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"expected a JSON object: {path}")
+    return value
+
+
+def slug(value: str) -> str:
+    result = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    if not result:
+        raise ValueError(f"cannot derive slug from {value!r}")
+    return result
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def manifest_paths(root: Path) -> list[Path]:
+    return sorted((root / "trajectories").glob(f"*/*/{TRAJECTORY_MANIFEST}"))
+
+
+def artifact_path_for_manifest(root: Path, path: Path) -> str:
+    return path.parent.relative_to(root).as_posix()
+
+
+def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool) -> dict[str, Any]:
+    manifest = read_json(path)
+    required = ("source_run_id", "bench", "model", "harness", "protocol", "artifacts")
+    missing = [key for key in required if manifest.get(key) in (None, "", [])]
+    if missing:
+        raise ValueError(f"{path}: missing {', '.join(missing)}")
+    if IDENTITY_KEYS.intersection(manifest):
+        keys = ", ".join(sorted(IDENTITY_KEYS.intersection(manifest)))
+        raise ValueError(f"{path}: submitter-controlled identity is forbidden: {keys}")
+
+    run_id = str(manifest["source_run_id"])
+    bench = str(manifest["bench"])
+    model = str(manifest["model"])
+    harness = str(manifest["harness"])
+    expected_parent = f"{slug(bench)}-{slug(model)}-{slug(harness)}"
+    if path.parent.name != run_id or path.parent.parent.name != expected_parent:
+        raise ValueError(
+            f"{path}: path must be trajectories/{expected_parent}/{run_id}/"
+        )
+
+    protocol = manifest["protocol"]
+    if not isinstance(protocol, dict):
+        raise ValueError(f"{path}: protocol must be an object")
+    if enforce_current_protocol:
+        expected = {
+            "num_steps": 5,
+            "train_rollouts_per_task": 3,
+            "test_rollouts_per_task": 3,
+        }
+        mismatches = {
+            key: protocol.get(key)
+            for key, value in expected.items()
+            if protocol.get(key) != value
+        }
+        if mismatches:
+            raise ValueError(
+                f"{path}: formal protocol mismatch {mismatches}; expected {expected}"
+            )
+
+    artifacts = manifest["artifacts"]
+    if not isinstance(artifacts, list) or not artifacts:
+        raise ValueError(f"{path}: artifacts must be a nonempty list")
+    seen: set[str] = set()
+    for item in artifacts:
+        if not isinstance(item, dict):
+            raise ValueError(f"{path}: artifact entries must be objects")
+        relative = item.get("path")
+        if not isinstance(relative, str) or not relative or relative in seen:
+            raise ValueError(f"{path}: invalid or duplicate artifact path {relative!r}")
+        seen.add(relative)
+        target = (path.parent / relative).resolve()
+        if path.parent.resolve() not in target.parents or not target.is_file():
+            raise ValueError(f"{path}: missing or escaping artifact {relative}")
+        if target.is_symlink():
+            raise ValueError(f"{path}: symlink artifacts are forbidden: {relative}")
+        if item.get("bytes") != target.stat().st_size:
+            raise ValueError(f"{path}: byte count mismatch for {relative}")
+        if item.get("sha256") != sha256(target):
+            raise ValueError(f"{path}: sha256 mismatch for {relative}")
+
+    score = manifest.get("score_and_cost") or {}
+    if not isinstance(score, dict):
+        raise ValueError(f"{path}: score_and_cost must be an object")
+    for key in ("V_test_A0", "V_test_AT", "delta_test"):
+        value = score.get(key)
+        if value is not None and (
+            not isinstance(value, (int, float)) or not math.isfinite(float(value))
+        ):
+            raise ValueError(f"{path}: {key} must be finite")
+    return manifest
+
+
+def load_receipts(root: Path) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    by_artifact: dict[str, dict[str, Any]] = {}
+    receipts: list[dict[str, Any]] = []
+    receipt_root = root / RECEIPT_ROOT
+    if not receipt_root.is_dir():
+        return by_artifact, receipts
+    for path in sorted(receipt_root.glob("pr-*.json")):
+        receipt = read_json(path)
+        if receipt.get("schema_version") != 1:
+            raise ValueError(f"{path}: unsupported receipt schema")
+        for key in (
+            "repository", "github_login", "github_user_id", "pull_request",
+            "merge_commit", "merged_at", "artifacts",
+        ):
+            if receipt.get(key) in (None, "", []):
+                raise ValueError(f"{path}: missing {key}")
+        if not isinstance(receipt["artifacts"], list):
+            raise ValueError(f"{path}: artifacts must be a list")
+        relative_receipt = path.relative_to(root).as_posix()
+        receipt["receipt_path"] = relative_receipt
+        receipts.append(receipt)
+        for item in receipt["artifacts"]:
+            if not isinstance(item, dict) or not item.get("artifact_path"):
+                raise ValueError(f"{path}: invalid artifact receipt")
+            artifact = str(item["artifact_path"])
+            if artifact in by_artifact:
+                raise ValueError(f"duplicate GitHub identity receipt for {artifact}")
+            by_artifact[artifact] = receipt
+    return by_artifact, receipts
+
+
+def percentage(value: Any) -> float | None:
+    if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return None
+    return round(float(value) * 100.0, 8)
+
+
+def trusted_site_record(
+    *, manifest: dict[str, Any], artifact_path: str, receipt: dict[str, Any]
+) -> dict[str, Any]:
+    score = manifest.get("score_and_cost") or {}
+    record: dict[str, Any] = {
+        "configuration": f"{slug(str(manifest['model']))}__{slug(str(manifest['harness']))}",
+        "benchmark": slug(str(manifest["bench"])),
+        "status": "verified",
+        "baseline_score": percentage(score.get("V_test_A0")),
+        "final_score": percentage(score.get("V_test_AT")),
+        "lift": percentage(score.get("delta_test")),
+        "run_id": manifest["source_run_id"],
+        "artifact_path": artifact_path,
+        "source_commit": manifest.get("source_commit"),
+        "submission": {
+            "github_login": receipt["github_login"],
+            "github_user_id": receipt["github_user_id"],
+            "pull_request": receipt["pull_request"],
+            "merge_commit": receipt["merge_commit"],
+            "merged_at": receipt["merged_at"],
+            "receipt_path": receipt["receipt_path"],
+        },
+    }
+    token_values = [
+        score.get("task_agent_tokens_A0"),
+        score.get("task_agent_tokens_AT"),
+        score.get("meta_agent_tokens"),
+        score.get("module_ablation_task_agent_tokens"),
+    ]
+    cost_values = [
+        score.get("task_agent_usd_A0"),
+        score.get("task_agent_usd_AT"),
+        score.get("meta_agent_usd"),
+        score.get("module_ablation_task_agent_usd"),
+    ]
+    numeric_tokens = [float(value) for value in token_values if isinstance(value, (int, float))]
+    numeric_costs = [float(value) for value in cost_values if isinstance(value, (int, float))]
+    if numeric_tokens:
+        record["total_tokens"] = round(sum(numeric_tokens))
+    if numeric_costs:
+        record["total_cost_usd"] = round(sum(numeric_costs), 8)
+    return record
+
+
+def ensure_unique(values: Iterable[str], label: str) -> None:
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            raise ValueError(f"duplicate {label}: {value}")
+        seen.add(value)

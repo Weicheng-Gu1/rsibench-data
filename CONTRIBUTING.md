@@ -5,8 +5,15 @@
    all three `--expect-*` assertions to the publisher.
 3. Confirm the run completed all configured optimization steps and final tests.
 4. Use the RSIBench trajectory publisher; do not copy files manually.
-5. Rebuild the leaderboard with `python scripts/build_leaderboard.py`.
-6. Commit the new run directory and generated leaderboard files together.
+5. Commit only the new immutable run directory. The merge workflow rebuilds
+   leaderboard indexes after attaching the authenticated GitHub identity.
+6. Push a branch and open a GitHub pull request. Do not push a result directly
+   to `main`: the pull request author is the authenticated submitter of record.
+
+Do not add or modify `submissions/github/**` or
+`leaderboard/submissions.json`. Those trusted identity records are written only
+by the default-branch workflow after a PR merges. A display name, email, or
+GitHub login embedded in a trajectory does not establish submission identity.
 
 Do not submit API keys, endpoint credentials, private task assets, invalid runs,
 or results with unresolved infrastructure contamination. Never rewrite an

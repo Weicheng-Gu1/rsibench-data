@@ -1,0 +1,63 @@
+name: Record merged submission identity
+
+on:
+  pull_request:
+    types: [closed]
+    paths:
+      - "trajectories/**"
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: rsibench-submission-receipts
+  cancel-in-progress: false
+
+jobs:
+  record:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Record GitHub-authenticated submitter
+        env:
+          REPOSITORY: ${{ github.repository }}
+          GITHUB_LOGIN: ${{ github.event.pull_request.user.login }}
+          GITHUB_USER_ID: ${{ github.event.pull_request.user.id }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+          MERGE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
+          BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+          HEAD_COMMIT: ${{ github.event.pull_request.head.sha }}
+          MERGED_AT: ${{ github.event.pull_request.merged_at }}
+          MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
+        run: |
+          python scripts/record_submission.py \
+            --repository "$REPOSITORY" \
+            --github-login "$GITHUB_LOGIN" \
+            --github-user-id "$GITHUB_USER_ID" \
+            --pull-request "$PULL_REQUEST" \
+            --merge-commit "$MERGE_COMMIT" \
+            --base-commit "$BASE_COMMIT" \
+            --head-commit "$HEAD_COMMIT" \
+            --merged-at "$MERGED_AT" \
+            --merged-by-github "$MERGED_BY"
+          python scripts/build_leaderboard.py
+      - name: Commit trusted receipt and indexes
+        env:
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add submissions/github leaderboard
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "submissions: record GitHub identity for PR #$PULL_REQUEST"
+          git push origin HEAD:main

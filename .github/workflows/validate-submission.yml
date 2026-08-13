@@ -1,0 +1,36 @@
+name: Validate trajectory submission
+
+on:
+  pull_request:
+    paths:
+      - "trajectories/**"
+      - "leaderboard/**"
+      - "submissions/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Load validators from the trusted base revision
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          mkdir -p /tmp/rsibench-validator
+          git show "$BASE_SHA:scripts/submission_common.py" > /tmp/rsibench-validator/submission_common.py
+          git show "$BASE_SHA:scripts/validate_submission.py" > /tmp/rsibench-validator/validate_submission.py
+      - name: Validate immutable artifacts and protocol
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python /tmp/rsibench-validator/validate_submission.py \
+            --repo-root "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$HEAD_SHA"

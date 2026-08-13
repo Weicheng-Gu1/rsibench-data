@@ -33,13 +33,16 @@ trajectories/
 leaderboard/
   results.csv
   results.jsonl
+  submissions.json                  # GitHub-authenticated public score feed
+submissions/github/
+  pr-<number>.json                  # trusted receipt written after merge
 schemas/
   trajectory-manifest.schema.json
 scripts/
   build_leaderboard.py
 ```
 
-The source repository publishes one complete run with:
+The source repository prepares one complete run on a submission branch with:
 
 ```bash
 python scripts/collab-experiments/publish_trajectory.py \
@@ -48,8 +51,19 @@ python scripts/collab-experiments/publish_trajectory.py \
   --expect-model "$MODEL" \
   --expect-harness "$HARNESS" \
   --trajectory-repo /path/to/rsibench-data \
-  --push
+  --defer-leaderboard
 ```
+
+Push that branch to your GitHub fork (or an authorized branch) and open a pull
+request against `Weicheng-Gu1/rsibench-data:main`. Direct pushes do not create a
+public submitter identity and are not eligible for the trusted site feed.
+
+The pull request author is the submitter of record. After merge, a protected
+GitHub Action reads the authenticated PR author, numeric GitHub user ID, PR
+number, merge commit, and merged artifact paths from the GitHub event. It writes
+`submissions/github/pr-<number>.json` and rebuilds
+`leaderboard/submissions.json`. Submission content cannot supply or override
+these identity fields.
 
 `run-id` is only the unique run instance. Experiment identity is the explicit
 tuple `(bench, model, harness, run-id)`: the publisher verifies the first three
@@ -83,3 +97,5 @@ git diff --check
 
 `leaderboard/results.csv` and `leaderboard/results.jsonl` are derived indexes.
 The immutable run manifest and raw artifacts remain the source of truth.
+`leaderboard/submissions.json` contains only runs with a merge-generated GitHub
+identity receipt and is the trusted feed consumed by the RSIBench Submit page.
