@@ -28,6 +28,7 @@ FIELDS = (
     "run_id",
     "backend",
     "source_commit",
+    "candidate_history",
     "submitted_by_github",
     "github_user_id",
     "pull_request",
@@ -111,6 +112,9 @@ def row_from_manifest(
     for field in FIELDS:
         if field not in row:
             row[field] = score.get(field)
+    row["candidate_history"] = json.dumps(
+        manifest.get("candidate_history") or {}, sort_keys=True
+    )
     layers = (manifest.get("ablations") or {}).get("layers") or {}
     for layer in (
         "legacy_pi_workspace",
@@ -148,9 +152,18 @@ def main() -> int:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
     site_records.sort(
         key=lambda row: (
-            str(row["benchmark"]), str(row["configuration"]), str(row["run_id"])
+            str(row["benchmark"]), str(row["configuration"]),
+            str((row.get("submission") or {}).get("merged_at") or ""),
+            str(row["run_id"]),
         )
     )
+    submissions_per_cell: dict[tuple[str, str], int] = {}
+    for record in site_records:
+        key = (str(record["benchmark"]), str(record["configuration"]))
+        sequence = submissions_per_cell.get(key, 0) + 1
+        submissions_per_cell[key] = sequence
+        record["submission_sequence"] = sequence
+        record["resubmission_increment"] = sequence - 1
     trusted = {
         "schema_version": 1,
         "source_repository": "Weicheng-Gu1/rsibench-data",

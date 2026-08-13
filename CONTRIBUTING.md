@@ -4,6 +4,10 @@
 2. Treat `(bench, model, harness, run-id)` as the submission identity and pass
    all three `--expect-*` assertions to the publisher.
 3. Confirm the run completed all configured optimization steps and final tests.
+   Preserve every Meta-agent round in `candidate_history`: candidates with a
+   benchmark score keep that score whether accepted or rejected; source/build/
+   protocol failures are explicitly marked `error`; rounds without a candidate
+   score are explicitly marked `not_scored`.
 4. Use the RSIBench trajectory publisher; do not copy files manually.
 5. Commit only the new immutable run directory. The merge workflow rebuilds
    leaderboard indexes after attaching the authenticated GitHub identity.
@@ -18,6 +22,8 @@ GitHub login embedded in a trajectory does not establish submission identity.
 Do not submit API keys, endpoint credentials, private task assets, invalid runs,
 or results with unresolved infrastructure contamination. Never rewrite an
 existing run directory. Corrections must be a new run with a new run ID.
+Multiple runs for the same benchmark/model/harness are all retained and ordered
+by their authenticated merge events.
 
 For terminal runs, preserve every ablation directory emitted by RSIBench. Do
 not split variants into independent submissions. The parent trajectory

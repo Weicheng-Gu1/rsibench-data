@@ -46,8 +46,12 @@ def init_repo(repo: Path) -> None:
     git(repo, "commit", "-m", "base")
 
 
-def add_manifest(repo: Path, *, inject_identity: bool = False) -> Path:
-    run_id = "formal-terminal-glm-5-2-pi-test"
+def add_manifest(
+    repo: Path,
+    *,
+    inject_identity: bool = False,
+    run_id: str = "formal-terminal-glm-5-2-pi-test",
+) -> Path:
     artifact = repo / "trajectories/terminal-glm-5-2-pi" / run_id
     artifact.mkdir(parents=True)
     payload = artifact / "result.json"
@@ -66,6 +70,23 @@ def add_manifest(repo: Path, *, inject_identity: bool = False) -> Path:
             "test_rollouts_per_task": 3,
         },
         "score_and_cost": {"V_test_A0": 0.1, "V_test_AT": 0.2, "delta_test": 0.1},
+        "candidate_history": {
+            "schema_version": 1,
+            "policy": "preserve_every_meta_agent_candidate",
+            "round_count": 5,
+            "accepted_rounds": [1],
+            "candidates": [
+                {
+                    "round": round_no,
+                    "candidate_id": f"round-{round_no:02d}",
+                    "status": "accepted" if round_no == 1 else "rejected",
+                    "accepted": round_no == 1,
+                    "score_status": "scored",
+                    "candidate_score": 0.1 + round_no / 100,
+                }
+                for round_no in range(1, 6)
+            ],
+        },
         "artifacts": [{
             "path": "result.json",
             "bytes": payload.stat().st_size,
@@ -139,6 +160,41 @@ class SubmissionProtocolTest(unittest.TestCase):
         self.assertEqual(result["submission"]["github_login"], "alice")
         self.assertEqual(result["submission"]["github_user_id"], 123)
         self.assertEqual(result["submission"]["pull_request"], 17)
+        self.assertEqual(result["submission_sequence"], 1)
+        self.assertEqual(result["resubmission_increment"], 0)
+        self.assertEqual(len(result["candidate_history"]["candidates"]), 5)
+
+    def test_repeated_cell_submissions_are_preserved_and_numbered(self) -> None:
+        base, head = self.commit_submission()
+        subprocess.run(
+            [sys.executable, str(self.repo / "scripts/record_submission.py"),
+             "--repo-root", str(self.repo), "--repository", "owner/rsibench-data",
+             "--github-login", "alice", "--github-user-id", "123", "--pull-request", "17",
+             "--merge-commit", head, "--base-commit", base, "--head-commit", head,
+             "--merged-at", "2026-08-13T12:00:00Z", "--merged-by-github", "maintainer"],
+            check=True,
+        )
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "receipt one")
+        base_two = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        second_run = "formal-terminal-glm-5-2-pi-test-two"
+        add_manifest(self.repo, run_id=second_run)
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "submission two")
+        head_two = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        subprocess.run(
+            [sys.executable, str(self.repo / "scripts/record_submission.py"),
+             "--repo-root", str(self.repo), "--repository", "owner/rsibench-data",
+             "--github-login", "bob", "--github-user-id", "456", "--pull-request", "18",
+             "--merge-commit", head_two, "--base-commit", base_two, "--head-commit", head_two,
+             "--merged-at", "2026-08-13T13:00:00Z", "--merged-by-github", "maintainer"],
+            check=True,
+        )
+        subprocess.run([sys.executable, str(self.repo / "scripts/build_leaderboard.py")], check=True)
+        results = json.loads((self.repo / "leaderboard/submissions.json").read_text())["results"]
+        self.assertEqual(len(results), 2)
+        self.assertEqual([row["submission_sequence"] for row in results], [1, 2])
+        self.assertEqual([row["resubmission_increment"] for row in results], [0, 1])
 
     def test_pr_validator_rejects_unindexed_trajectory_file(self) -> None:
         base = git(self.repo, "rev-parse", "HEAD").stdout.strip()

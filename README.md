@@ -16,6 +16,7 @@ trajectories/
   <subset>-<model>-<harness>/
     <run-id>/
       trajectory-manifest.json
+      # candidate_history in the manifest preserves all five Meta-agent rounds
       result.json or suite.json
       config.resolved.json
       splits.resolved.json
@@ -99,3 +100,7 @@ git diff --check
 The immutable run manifest and raw artifacts remain the source of truth.
 `leaderboard/submissions.json` contains only runs with a merge-generated GitHub
 identity receipt and is the trusted feed consumed by the RSIBench Submit page.
+Every merged run remains in that feed. Repeated submissions for the same
+`(bench, model, harness)` cell receive deterministic `submission_sequence` and
+`resubmission_increment` values; later submissions never overwrite earlier
+candidate histories or scores.

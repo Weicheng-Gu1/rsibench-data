@@ -131,6 +131,20 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
             not isinstance(value, (int, float)) or not math.isfinite(float(value))
         ):
             raise ValueError(f"{path}: {key} must be finite")
+    history = manifest.get("candidate_history")
+    if enforce_current_protocol:
+        if not isinstance(history, dict) or history.get("schema_version") != 1:
+            raise ValueError(f"{path}: candidate_history schema_version 1 is required")
+        candidates = history.get("candidates")
+        if not isinstance(candidates, list) or len(candidates) != 5:
+            raise ValueError(f"{path}: candidate_history must preserve all 5 RSI rounds")
+        for expected_round, candidate in enumerate(candidates, start=1):
+            if not isinstance(candidate, dict) or candidate.get("round") != expected_round:
+                raise ValueError(f"{path}: invalid candidate_history round {expected_round}")
+            if candidate.get("status") in (None, "") or candidate.get("score_status") not in {
+                "scored", "error", "not_scored"
+            }:
+                raise ValueError(f"{path}: incomplete candidate_history round {expected_round}")
     return manifest
 
 
@@ -185,6 +199,7 @@ def trusted_site_record(
         "run_id": manifest["source_run_id"],
         "artifact_path": artifact_path,
         "source_commit": manifest.get("source_commit"),
+        "candidate_history": manifest.get("candidate_history"),
         "submission": {
             "github_login": receipt["github_login"],
             "github_user_id": receipt["github_user_id"],
