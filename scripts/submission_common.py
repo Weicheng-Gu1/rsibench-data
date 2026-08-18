@@ -90,6 +90,7 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
             "num_steps": 5,
             "train_rollouts_per_task": 3,
             "test_rollouts_per_task": 3,
+            "test_state_policy": "all-accepted",
         }
         mismatches = {
             key: protocol.get(key)
@@ -145,6 +146,45 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
                 "scored", "error", "not_scored"
             }:
                 raise ValueError(f"{path}: incomplete candidate_history round {expected_round}")
+        accepted_rounds = [
+            int(candidate["round"])
+            for candidate in candidates
+            if candidate.get("accepted")
+        ]
+        expected_test_order = [0]
+        if accepted_rounds:
+            expected_test_order.extend(
+                [accepted_rounds[-1], *accepted_rounds[:-1]]
+            )
+        if protocol.get("test_evaluation_order") != expected_test_order:
+            raise ValueError(
+                f"{path}: test_evaluation_order must be "
+                f"A0, A_last, then earlier accepted generations: "
+                f"expected {expected_test_order}, got "
+                f"{protocol.get('test_evaluation_order')!r}"
+            )
+
+        ablations = manifest.get("ablations")
+        if not isinstance(ablations, dict) or ablations.get("method") != (
+            "keep_one_changed_module"
+        ):
+            raise ValueError(f"{path}: keep-one ablation manifest is required")
+        layers = ablations.get("layers")
+        if not isinstance(layers, dict):
+            raise ValueError(f"{path}: ablation layers must be an object")
+        for layer, payload in layers.items():
+            if not isinstance(payload, dict):
+                raise ValueError(f"{path}: invalid ablation layer {layer}")
+            if payload.get("status") != "completed":
+                continue
+            if payload.get("rollouts_per_task") != 3:
+                raise ValueError(
+                    f"{path}: completed ablation layer {layer} must use avg@3"
+                )
+            if not isinstance(payload.get("component_scores"), dict):
+                raise ValueError(
+                    f"{path}: completed ablation layer {layer} has no component scores"
+                )
     return manifest
 
 

@@ -68,6 +68,8 @@ def add_manifest(
             "num_steps": 5,
             "train_rollouts_per_task": 3,
             "test_rollouts_per_task": 3,
+            "test_state_policy": "all-accepted",
+            "test_evaluation_order": [0, 1],
         },
         "score_and_cost": {"V_test_A0": 0.1, "V_test_AT": 0.2, "delta_test": 0.1},
         "candidate_history": {
@@ -86,6 +88,10 @@ def add_manifest(
                 }
                 for round_no in range(1, 6)
             ],
+        },
+        "ablations": {
+            "method": "keep_one_changed_module",
+            "layers": {},
         },
         "artifacts": [{
             "path": "result.json",
@@ -209,6 +215,46 @@ class SubmissionProtocolTest(unittest.TestCase):
         )
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("outside manifest checksums", completed.stdout + completed.stderr)
+
+    def test_pr_validator_rejects_wrong_held_out_order(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        manifest = add_manifest(self.repo)
+        value = json.loads(manifest.read_text())
+        value["protocol"]["test_evaluation_order"] = [0]
+        manifest.write_text(json.dumps(value, indent=2) + "\n")
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "bad order")
+        head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        completed = subprocess.run(
+            [sys.executable, str(self.repo / "scripts/validate_submission.py"),
+             "--repo-root", str(self.repo), "--base", base, "--head", head],
+            text=True, capture_output=True,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("A0, A_last", completed.stdout + completed.stderr)
+
+    def test_pr_validator_rejects_avg1_completed_ablation(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        manifest = add_manifest(self.repo)
+        value = json.loads(manifest.read_text())
+        value["ablations"]["layers"] = {
+            "pi_core_source": {
+                "status": "completed",
+                "rollouts_per_task": 1,
+                "component_scores": {"PI_SRC_AGENT_LOOP": {"mean_reward": 0.2}},
+            }
+        }
+        manifest.write_text(json.dumps(value, indent=2) + "\n")
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "bad ablation repeats")
+        head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        completed = subprocess.run(
+            [sys.executable, str(self.repo / "scripts/validate_submission.py"),
+             "--repo-root", str(self.repo), "--base", base, "--head", head],
+            text=True, capture_output=True,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("must use avg@3", completed.stdout + completed.stderr)
 
 
 if __name__ == "__main__":

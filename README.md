@@ -43,7 +43,11 @@ scripts/
   build_leaderboard.py
 ```
 
-The source repository prepares one complete run on a submission branch with:
+The source repository's `rsibench-run` skill is the canonical submission
+interface. It validates one complete run, initializes a partial-clone data cache
+when needed, pushes through the authenticated submitter's fork when necessary,
+and opens a pull request directly against `Weicheng-Gu1/rsibench-data:main`.
+The lower-level publisher remains available for maintainers:
 
 ```bash
 python scripts/collab-experiments/publish_trajectory.py \
@@ -88,6 +92,11 @@ compact `component_scores`; each layer's `results.json` and `trials/` retain the
 complete scores, token/cost accounting, and raw task-agent trajectories.
 Component scores are absolute `Only(Mi)` scores; new records do not calculate
 `Only(Mi)-A0` or `A*-Only(Mi)`.
+
+Current formal submissions use avg@3 throughout. Held-out evaluation order is
+`A0`, `A_last`, then every earlier accepted generation without duplicating
+`A_last`; completed changed-module keep-one layers also use avg@3. Pull-request
+validation rejects a different state policy, order, or ablation repeat count.
 
 ## Rebuild The Leaderboard
 

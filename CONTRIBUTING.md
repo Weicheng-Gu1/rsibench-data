@@ -8,7 +8,9 @@
    benchmark score keep that score whether accepted or rejected; source/build/
    protocol failures are explicitly marked `error`; rounds without a candidate
    score are explicitly marked `not_scored`.
-4. Use the RSIBench trajectory publisher; do not copy files manually.
+4. Use the `rsibench-run` submission command; do not copy files manually. The
+   command opens a GitHub-authenticated PR directly against
+   `Weicheng-Gu1/rsibench-data:main` and automatically uses your fork if needed.
 5. Commit only the new immutable run directory. The merge workflow rebuilds
    leaderboard indexes after attaching the authenticated GitHub identity.
 6. Push a branch and open a GitHub pull request. Do not push a result directly
@@ -34,3 +36,7 @@ trajectories. New submissions use `keep_one_changed_module`: every reported
 component score is `A0` plus that component alone, with all other editable
 components restored to `A0`. Submit its absolute score only; do not add
 baseline or full-score difference fields.
+
+Formal held-out and keep-one scores are avg@3. The held-out execution order is
+`A0`, `A_last`, then earlier accepted generations; `A_last` is never evaluated
+twice. Submissions using avg@1 or a different ordering fail CI validation.
