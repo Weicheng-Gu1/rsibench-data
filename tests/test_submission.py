@@ -116,6 +116,15 @@ class SubmissionProtocolTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_validator_checkout_materializes_lfs_artifacts(self) -> None:
+        workflow = (
+            ROOT / ".github/workflows/validate-submission.yml"
+        ).read_text()
+        checkout = workflow.split("- uses: actions/checkout@v4", 1)[1].split(
+            "- uses: actions/setup-python@v5", 1
+        )[0]
+        self.assertIn("lfs: true", checkout)
+
     def commit_submission(self, *, inject_identity: bool = False) -> tuple[str, str]:
         base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
         add_manifest(self.repo, inject_identity=inject_identity)
