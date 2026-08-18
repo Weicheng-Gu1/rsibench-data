@@ -32,6 +32,14 @@ def main() -> int:
     parser.add_argument("--head-commit", required=True)
     parser.add_argument("--merged-at", required=True)
     parser.add_argument("--merged-by-github", required=True)
+    parser.add_argument(
+        "--added-manifests-file",
+        type=Path,
+        help=(
+            "newline-delimited manifest paths returned by the GitHub pull-files API; "
+            "used for reliable workflow-dispatch backfills"
+        ),
+    )
     args = parser.parse_args()
     root = args.repo_root.resolve()
     receipt_path = root / RECEIPT_ROOT / f"pr-{args.pull_request}.json"
@@ -43,15 +51,34 @@ def main() -> int:
         raise SystemExit(f"refusing to replace identity receipt: {receipt_path}")
 
     added: list[Path] = []
-    diff = git(
-        root, "diff", "--name-status", "--no-renames",
-        args.base_commit, args.merge_commit, "--", "trajectories",
-    )
-    for line in diff.splitlines():
-        status, relative = line.split("\t", 1)
-        path = Path(relative)
-        if status == "A" and path.name == "trajectory-manifest.json":
-            added.append(root / path)
+    if args.added_manifests_file:
+        for line in args.added_manifests_file.read_text(encoding="utf-8").splitlines():
+            relative = Path(line.strip())
+            if not line.strip():
+                continue
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or len(relative.parts) != 4
+                or relative.parts[0] != "trajectories"
+                or relative.name != "trajectory-manifest.json"
+            ):
+                raise SystemExit(f"invalid trajectory manifest path: {line!r}")
+            path = (root / relative).resolve()
+            if root not in path.parents or not path.is_file():
+                raise SystemExit(f"trajectory manifest is missing: {relative}")
+            added.append(path)
+    else:
+        diff = git(
+            root, "diff", "--name-status", "--no-renames",
+            args.base_commit, args.merge_commit, "--", "trajectories",
+        )
+        for line in diff.splitlines():
+            status, relative = line.split("\t", 1)
+            path = Path(relative)
+            if status == "A" and path.name == "trajectory-manifest.json":
+                added.append(root / path)
+    added = sorted(set(added))
     if not added:
         raise SystemExit("merged PR added no trajectory manifests; no receipt created")
 

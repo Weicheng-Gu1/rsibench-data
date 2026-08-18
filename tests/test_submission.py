@@ -28,6 +28,7 @@ def copy_protocol(repo: Path) -> None:
         "scripts/submission_common.py",
         "scripts/validate_submission.py",
         "scripts/record_submission.py",
+        "scripts/publish_submission.py",
     ):
         target = repo / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -170,6 +171,84 @@ class SubmissionProtocolTest(unittest.TestCase):
         self.assertEqual(result["resubmission_increment"], 0)
         self.assertEqual(len(result["candidate_history"]["candidates"]), 5)
 
+    def test_record_receipt_from_api_manifest_list_is_idempotent(self) -> None:
+        base, head = self.commit_submission()
+        manifest_list = self.repo.parent / "added-manifests.txt"
+        manifest_list.write_text(
+            "trajectories/terminal-glm-5-2-pi/"
+            "formal-terminal-glm-5-2-pi-test/trajectory-manifest.json\n"
+        )
+        command = [
+            sys.executable, str(self.repo / "scripts/record_submission.py"),
+            "--repo-root", str(self.repo), "--repository", "owner/rsibench-data",
+            "--github-login", "alice", "--github-user-id", "123",
+            "--pull-request", "17", "--merge-commit", head,
+            "--base-commit", base, "--head-commit", head,
+            "--merged-at", "2026-08-13T12:00:00Z",
+            "--merged-by-github", "maintainer",
+            "--added-manifests-file", str(manifest_list),
+        ]
+        first = subprocess.run(command, text=True, capture_output=True)
+        second = subprocess.run(command, text=True, capture_output=True)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn("already exists", second.stdout)
+        receipts = list((self.repo / "submissions/github").glob("pr-*.json"))
+        self.assertEqual([path.name for path in receipts], ["pr-17.json"])
+
+    def test_publish_script_backfills_and_replays_without_new_commit(self) -> None:
+        base, head = self.commit_submission()
+        remote = self.repo.parent / "remote.git"
+        remote.mkdir()
+        git(remote, "init", "--bare")
+        git(self.repo, "remote", "add", "origin", str(remote))
+        git(self.repo, "push", "-u", "origin", "HEAD:main")
+        worker = self.repo.parent / "worker"
+        git(self.repo.parent, "clone", str(remote), str(worker))
+        git(worker, "checkout", "main")
+        pull = self.repo.parent / "pull.json"
+        pull.write_text(json.dumps({
+            "number": 17,
+            "merged": True,
+            "merge_commit_sha": head,
+            "base": {"sha": base},
+            "head": {"sha": head},
+            "merged_at": "2026-08-13T12:00:00Z",
+            "merged_by": {"login": "maintainer"},
+            "user": {"login": "alice", "id": 123},
+        }))
+        manifests = self.repo.parent / "api-manifests.txt"
+        manifests.write_text(
+            "trajectories/terminal-glm-5-2-pi/"
+            "formal-terminal-glm-5-2-pi-test/trajectory-manifest.json\n"
+        )
+        command = [
+            sys.executable, str(worker / "scripts/publish_submission.py"),
+            "--repo-root", str(worker), "--repository", "owner/rsibench-data",
+            "--pull-request-json", str(pull),
+            "--added-manifests-file", str(manifests),
+            "--retry-delay", "0",
+        ]
+        first = subprocess.run(command, text=True, capture_output=True)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        published = git(remote, "rev-parse", "refs/heads/main").stdout.strip()
+        second = subprocess.run(command, text=True, capture_output=True)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn("already published", second.stdout)
+        self.assertEqual(
+            git(remote, "rev-parse", "refs/heads/main").stdout.strip(),
+            published,
+        )
+        git(worker, "fetch", "origin", "main")
+        receipt = json.loads(
+            git(worker, "show", "origin/main:submissions/github/pr-17.json").stdout
+        )
+        self.assertEqual(receipt["github_login"], "alice")
+        feed = json.loads(
+            git(worker, "show", "origin/main:leaderboard/submissions.json").stdout
+        )
+        self.assertEqual(feed["generated_from_receipts"], 1)
+
     def test_repeated_cell_submissions_are_preserved_and_numbered(self) -> None:
         base, head = self.commit_submission()
         subprocess.run(
@@ -255,6 +334,18 @@ class SubmissionProtocolTest(unittest.TestCase):
         )
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("must use avg@3", completed.stdout + completed.stderr)
+
+
+class SubmissionWorkflowContractTest(unittest.TestCase):
+    def test_receipt_workflow_supports_lossless_backfill_and_push_retry(self) -> None:
+        workflow = (ROOT / ".github/workflows/record-submission-identity.yml").read_text()
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("pull_request:", workflow)
+        self.assertIn("scripts/publish_submission.py", workflow)
+        self.assertIn("--max-attempts 8", workflow)
+        self.assertIn("gh api --paginate", workflow)
+        self.assertNotIn("queue: max", workflow)
+        self.assertNotIn("group: rsibench-submission-receipts", workflow)
 
 
 if __name__ == "__main__":
