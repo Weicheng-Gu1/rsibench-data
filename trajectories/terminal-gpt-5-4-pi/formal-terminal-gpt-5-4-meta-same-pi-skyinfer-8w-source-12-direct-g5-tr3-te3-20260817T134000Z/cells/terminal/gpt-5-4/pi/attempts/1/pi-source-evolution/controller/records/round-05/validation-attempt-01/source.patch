@@ -1,0 +1,38 @@
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index c3a3473..6d99b5e 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -1058,11 +1058,20 @@ export class AgentSession {
+ 	// Prompting
+ 	// =========================================================================
+ 
++	private _canContinueCurrentState(): boolean {
++		const messages = this.agent.state.messages;
++		if (messages.length === 0) {
++			return false;
++		}
++		const lastMessage = messages[messages.length - 1];
++		return lastMessage.role === "user" || lastMessage.role === "toolResult";
++	}
++
+ 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+ 		this._isAgentRunActive = true;
+ 		try {
+ 			await this.agent.prompt(messages);
+-			while (await this._handlePostAgentRun()) {
++			while ((await this._handlePostAgentRun()) && this._canContinueCurrentState()) {
+ 				await this.agent.continue();
+ 			}
+ 		} finally {
+@@ -1098,8 +1107,9 @@ export class AgentSession {
+ 		}
+ 
+ 		// The agent loop drains both queues before emitting agent_end. Any messages
+-		// here were queued by agent_end extension handlers and need a continuation.
+-		return this.agent.hasQueuedMessages();
++		// here were queued by agent_end extension handlers and need a continuation,
++		// but only when the rebuilt tail still satisfies Agent.continue() preconditions.
++		return this.agent.hasQueuedMessages() && this._canContinueCurrentState();
+ 	}
+ 
+ 	/**

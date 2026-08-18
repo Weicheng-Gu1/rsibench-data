@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Inspected the training opportunity index, evolution history, failure summary, and raw failed/successful trajectories. A recurring source-level weakness is that tool-visible path handling expands the default current-directory argument into an absolute path before surfacing errors or display text. In failures such as terminal-bench-cobol-modernization repeat 0, the agent spent many reads probing files after early environment uncertainty; simple tool affordances matter on the default path. I made one narrow change so tool path resolution preserves \".\" for default current-directory requests instead of converting it to the absolute cwd, improving model-visible tool prompts/errors and keeping behavior closer to the user-facing tool contract without changing file resolution for real paths.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "round-03-tool-path-current-dir-preserve-dot",
+    "failure_evidence": [
+      "/app/pi-source-evidence/references/458773903c95752c-training-opportunity-index.json",
+      "/app/pi-source-evidence/references/a79beee491cafe80-evolution-history.json",
+      "task=terminal-bench-cobol-modernization; failure_repeat=0; action=action_13 repeated reads and edits after early environment/file-state uncertainty instead of converging like pass_repeat=1; verifier=reward 0 with many repeated tool calls; pass_repeat=1",
+      "task=terminal-bench-regex-log; failure_repeat=0; action=action_03 assistant took a very short direct write path without checking the environment, contrasting with pass_repeat=1 where a small extra inspection/verification step succeeded; verifier=reward 0; pass_repeat=1"
+    ],
+    "root_cause": "The shared tool path helper eagerly resolves current-directory placeholders such as \".\" into the absolute cwd on the default execution path. That makes tool call rendering and some error/reporting text diverge from the documented schema contract that default directory arguments are represented as current-directory requests, adding unnecessary absolute-path noise exactly when the model is deciding where to inspect first.",
+    "mechanism": "Adjust resolveToCwd() so literal current-directory placeholders (\".\", \"./\", and empty string) preserve the symbolic \".\" result instead of being rewritten to the absolute cwd. All other paths still resolve normally. This changes model-visible tool call/error text on the default path while leaving actual nontrivial path resolution untouched.",
+    "evidence_basis": "within_task_contrast",
+    "prior_attempt_disposition": "rollback_and_pivot",
+    "why_this_component": "PI_SRC_TOOL_RUNTIME owns tool argument/path handling on the normal RSIBench path. The causal trigger occurs before any provider/runtime boundary: the model receives tool affordances and outcomes derived from resolveToCwd(), so improving this helper directly affects default read/find/ls/write path semantics without relying on prompt changes.",
+    "predicted_fixes": [
+      "Tool calls and path-related messages for default current-directory operations will stay compact and schema-aligned, reducing avoidable environment confusion at the start of file-inspection tasks.",
+      "Tasks that rely on quick directory inspection before deeper reads should more often preserve the simple '.' mental model instead of shifting to verbose absolute-path references."
+    ],
+    "regression_risks": [
+      "If any caller implicitly expected resolveToCwd('.', cwd) to return an absolute path for non-display logic, behavior could differ for that exact placeholder case.",
+      "The lift may be small if most failures are dominated by higher-level reasoning rather than tool-surface clarity."
+    ],
+    "targeted_checks": [
+      "tools",
+      "Replay terminal-bench-cobol-modernization repeat 0 and verify early tool path text for current-directory operations stays '.'-style rather than absolute cwd",
+      "Replay a simple inspection task such as terminal-bench-regex-log and verify read/find/ls default-path outputs remain compact and actionable"
+    ],
+    "analysis_tags": [
+      "tool-runtime",
+      "path-resolution",
+      "default-path",
+      "within-task-contrast",
+      "observation-clarity"
+    ]
+  }
+}

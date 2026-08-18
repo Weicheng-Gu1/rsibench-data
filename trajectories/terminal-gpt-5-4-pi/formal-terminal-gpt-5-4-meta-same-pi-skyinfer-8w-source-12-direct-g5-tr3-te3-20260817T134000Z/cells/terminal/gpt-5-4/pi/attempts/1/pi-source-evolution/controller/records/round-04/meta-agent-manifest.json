@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "change_id": "round-04-agent-session-post-run-continue-legality-guard",
+  "failure_evidence": [
+    "/app/pi-source-evidence/references/d7c16a3c00d05d2e-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/2da44b11af5f7b13-evolution-history.json",
+    "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=1; action=action_38 after a long run ending in assistant error/terminal state, session post-run logic remained on the continuation path instead of requiring a continuable user/toolResult tail; verifier=trajectory consumed 1086804 tokens and still failed; pass_repeat=2",
+    "task=terminal-bench-cobol-modernization; failure_repeat=0; action=action_13 repeated reads/edits and no convergence after the initial path diverged from the concise successful repeat; verifier=reward 0 with many repeated tool calls; pass_repeat=1"
+  ],
+  "root_cause": "AgentSession post-run orchestration could signal another continue cycle after retry/compaction/queued-follow-up handling without verifying that the current persisted transcript tail still satisfied Agent.continue() legality. When the tail remained an assistant message, the session could stay on a useless continuation path after terminal assistant states, contributing to long churny failures.",
+  "mechanism": "Add a narrow default-path legality check in AgentSession that only allows post-run continuation when the current transcript tail is user or toolResult. The guard is applied both when _handlePostAgentRun reports more work and immediately before calling agent.continue(), preserving the accepted retry mechanism but preventing assistant-tail post-run continuation after terminal states.",
+  "evidence_basis": "within_task_contrast",
+  "prior_attempt_disposition": "improve_accepted",
+  "why_this_component": "The failure happens in coding-session post-run control flow on the normal RSIBench execution path, after provider output has already been converted into assistant messages and after agent-core has established continue() preconditions. PI_SRC_CODING_SESSION owns the while-loop that decides whether to re-enter the agent loop; prompt or tool changes would not affect this runtime decision point.",
+  "predicted_fixes": [
+    "terminal-bench-adaptive-rejection-sampler repeat 1 should stop cleanly once post-run retry/compaction leaves an assistant-tail transcript, instead of spending extra continuation budget on an invalid state.",
+    "Other runs that end with assistant-tail terminal states but still have queued post-run work will no longer attempt useless continue cycles; only legal user/toolResult-tail continuations will proceed.",
+    "The accepted idle-stream retry behavior remains active for transient provider stalls, but its continuation now depends on an actually continuable transcript tail."
+  ],
+  "regression_risks": [
+    "If some productive flow currently relies on post-run work mutating state into a continuable form after _handlePostAgentRun returns but before agent.continue(), this stricter check could stop earlier; the risk is reduced because the check matches documented agent-core continue preconditions.",
+    "Lift may be limited if the main remaining failures are dominated by task reasoning rather than invalid post-run continuation churn."
+  ],
+  "targeted_checks": [
+    "agent-session",
+    "cli-smoke",
+    "Replay terminal-bench-adaptive-rejection-sampler repeat 1 and verify post-run logic no longer re-enters continue when the transcript tail is assistant after retry/compaction handling.",
+    "Replay a legal queued-follow-up path where the tail is user or toolResult and verify continuation still occurs."
+  ],
+  "analysis_tags": [
+    "coding-session",
+    "post-run-orchestration",
+    "continue-legality",
+    "within-task-contrast",
+    "default-path"
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "change_id": "round-05-agent-session-continue-tail-legality",
+  "layer": "agent_core_source",
+  "primary_module": "PI_SRC_CODING_SESSION",
+  "compound_modules": [],
+  "files": [
+    "packages/coding-agent/src/core/agent-session.ts"
+  ],
+  "requires_rebuild": true,
+  "failure_evidence": [
+    "/app/pi-source-evidence/references/175b54de648090eb-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/651b1124cf05d393-evolution-history.json",
+    "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=1; action=action_38 after a long failing run, assistant stayed on a post-run continuation path after terminal assistant states instead of ending or waiting for a legal user/toolResult tail; verifier=1086804-token failed trajectory with reward 0; pass_repeat=2"
+  ],
+  "root_cause": "AgentSession still attempted post-run continuation based solely on _handlePostAgentRun() returning true. When retries, compaction, or agent_end extension hooks left the persisted tail as an assistant message, the session could re-enter continue() from a transcript state that agent-core documents as illegal, contributing to long churny failures. Previous broader versions of this idea regressed because they changed other paths too aggressively; the remaining causal defect is the missing legality check at the actual continue call site and final queued-continuation return.",
+  "mechanism": "Add a small default-path helper that checks the current transcript tail and allow post-run continuation only when the last message is user or toolResult. Use that helper both in the _runAgentPrompt() continue loop and when _handlePostAgentRun() decides whether queued post-agent work should request another continuation. This keeps existing retry/compaction/queue mechanisms loaded on the normal path, but suppresses only the invalid assistant-tail continuation step.",
+  "evidence_basis": "within_task_contrast",
+  "prior_attempt_disposition": "rollback_and_pivot",
+  "why_this_component": "The cited wrong action happens in PI_SRC_CODING_SESSION after provider output, tool execution, and compaction have already updated agent state. AgentSession owns the while-loop that actually calls agent.continue() on the default RSIBench path, so this is the earliest source component that can stop the invalid continuation without changing task policy or provider/tool semantics.",
+  "predicted_fixes": [
+    "terminal-bench-adaptive-rejection-sampler repeat 1 should stop after terminal assistant-tail post-run state instead of consuming extra budget on invalid continuation attempts.",
+    "Other runs with queued post-run work added after agent_end will still continue when a legal user/toolResult tail exists, but assistant-tail terminal states will no longer re-enter the loop."
+  ],
+  "regression_risks": [
+    "Some extension flow might expect queued work alone to force a continuation even when it did not append a continuable message; that flow will now stop until it supplies a user/toolResult tail.",
+    "This may have limited lift if most remaining failures are dominated by task reasoning rather than post-run continuation churn."
+  ],
+  "targeted_checks": [
+    "agent-session",
+    "Replay terminal-bench-adaptive-rejection-sampler repeat 1 and verify no agent.continue() occurs after post-run handling leaves an assistant-tail transcript.",
+    "Replay a legal queued-follow-up path and verify continuation still occurs when the tail is user or toolResult."
+  ],
+  "analysis_tags": [
+    "coding-session",
+    "post-run-orchestration",
+    "continue-legality",
+    "within-task-contrast",
+    "default-path"
+  ]
+}
