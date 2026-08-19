@@ -52,24 +52,25 @@ def add_manifest(
     *,
     inject_identity: bool = False,
     run_id: str = "formal-terminal-glm-5-2-pi-test",
+    bench: str = "terminal",
 ) -> Path:
-    artifact = repo / "trajectories/terminal-glm-5-2-pi" / run_id
+    artifact = repo / f"trajectories/{bench}-glm-5-2-pi" / run_id
     artifact.mkdir(parents=True)
     payload = artifact / "result.json"
     payload.write_text("{}\n")
     manifest = {
         "schema_version": 1,
         "source_run_id": run_id,
-        "subset": "terminal",
+        "subset": bench,
         "published_at_utc": "2026-08-13T11:59:00Z",
-        "bench": "terminal",
+        "bench": bench,
         "model": "glm-5-2",
         "harness": "pi",
         "protocol": {
             "num_steps": 5,
             "train_rollouts_per_task": 3,
             "test_rollouts_per_task": 3,
-            "test_state_policy": "all-accepted",
+            "test_state_policy": "all-accepted" if bench == "terminal" else "endpoints",
             "test_evaluation_order": [0, 1],
         },
         "score_and_cost": {"V_test_A0": 0.1, "V_test_AT": 0.2, "delta_test": 0.1},
@@ -90,16 +91,17 @@ def add_manifest(
                 for round_no in range(1, 6)
             ],
         },
-        "ablations": {
-            "method": "keep_one_changed_module",
-            "layers": {},
-        },
         "artifacts": [{
             "path": "result.json",
             "bytes": payload.stat().st_size,
             "sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
         }],
     }
+    if bench == "terminal":
+        manifest["ablations"] = {
+            "method": "keep_one_changed_module",
+            "layers": {},
+        }
     if inject_identity:
         manifest["github_login"] = "forged-user"
     path = artifact / "trajectory-manifest.json"
@@ -308,7 +310,7 @@ class SubmissionProtocolTest(unittest.TestCase):
         base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
         manifest = add_manifest(self.repo)
         value = json.loads(manifest.read_text())
-        value["protocol"]["test_evaluation_order"] = [0]
+        value["protocol"]["test_evaluation_order"] = [0, 1, 1]
         manifest.write_text(json.dumps(value, indent=2) + "\n")
         git(self.repo, "add", "trajectories")
         git(self.repo, "commit", "-m", "bad order")
@@ -319,12 +321,33 @@ class SubmissionProtocolTest(unittest.TestCase):
             text=True, capture_output=True,
         )
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("A0, A_last", completed.stdout + completed.stderr)
+        self.assertIn("A0 and A_last", completed.stdout + completed.stderr)
+
+    def test_pr_validator_rejects_missing_endpoint_score(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        manifest = add_manifest(self.repo)
+        value = json.loads(manifest.read_text())
+        value["score_and_cost"].pop("V_test_AT")
+        manifest.write_text(json.dumps(value, indent=2) + "\n")
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "missing final score")
+        head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        completed = subprocess.run(
+            [sys.executable, str(self.repo / "scripts/validate_submission.py"),
+             "--repo-root", str(self.repo), "--base", base, "--head", head],
+            text=True, capture_output=True,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("required V_test_AT must be finite", completed.stdout + completed.stderr)
 
     def test_pr_validator_rejects_avg1_completed_ablation(self) -> None:
         base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
         manifest = add_manifest(self.repo)
         value = json.loads(manifest.read_text())
+        value["ablations"] = {
+            "method": "keep_one_changed_module",
+            "layers": {},
+        }
         value["ablations"]["layers"] = {
             "pi_core_source": {
                 "status": "completed",
@@ -343,6 +366,62 @@ class SubmissionProtocolTest(unittest.TestCase):
         )
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("must use avg@3", completed.stdout + completed.stderr)
+
+    def test_pr_validator_accepts_optional_all_accepted_curve(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        manifest = add_manifest(
+            self.repo,
+            bench="science",
+            run_id="formal-science-glm-5-2-pi-test",
+        )
+        value = json.loads(manifest.read_text())
+        value["protocol"]["test_state_policy"] = "all-accepted"
+        value["protocol"]["test_evaluation_order"] = [0, 1]
+        manifest.write_text(json.dumps(value, indent=2) + "\n")
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "optional curve")
+        head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        completed = subprocess.run(
+            [sys.executable, str(self.repo / "scripts/validate_submission.py"),
+             "--repo-root", str(self.repo), "--base", base, "--head", head],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_pr_validator_accepts_nonterminal_endpoints_without_ablation(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        add_manifest(
+            self.repo,
+            bench="science",
+            run_id="formal-science-glm-5-2-pi-endpoints",
+        )
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "nonterminal endpoints")
+        head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        completed = subprocess.run(
+            [sys.executable, str(self.repo / "scripts/validate_submission.py"),
+             "--repo-root", str(self.repo), "--base", base, "--head", head],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_pr_validator_rejects_terminal_endpoints_without_ablation(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        manifest = add_manifest(self.repo)
+        value = json.loads(manifest.read_text())
+        value["protocol"]["test_state_policy"] = "endpoints"
+        value.pop("ablations")
+        manifest.write_text(json.dumps(value, indent=2) + "\n")
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "invalid terminal minimum")
+        head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        completed = subprocess.run(
+            [sys.executable, str(self.repo / "scripts/validate_submission.py"),
+             "--repo-root", str(self.repo), "--base", base, "--head", head],
+            text=True, capture_output=True,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("Terminal requires test_state_policy=all-accepted", completed.stdout + completed.stderr)
 
 
 class SubmissionWorkflowContractTest(unittest.TestCase):

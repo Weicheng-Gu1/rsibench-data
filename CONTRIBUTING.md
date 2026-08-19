@@ -27,7 +27,8 @@ existing run directory. Corrections must be a new run with a new run ID.
 Multiple runs for the same benchmark/model/harness are all retained and ordered
 by their authenticated merge events.
 
-For terminal runs, preserve every ablation directory emitted by RSIBench. Do
+Module ablations are required for terminal and optional for other domains. For
+terminal runs, preserve every ablation directory emitted by RSIBench. Do
 not split variants into independent submissions. The parent trajectory
 manifest indexes shared resources and, for Pi source mode, core source. A
 completed layer includes its results and raw `trials/`; unchanged modules are
@@ -37,6 +38,7 @@ component score is `A0` plus that component alone, with all other editable
 components restored to `A0`. Submit its absolute score only; do not add
 baseline or full-score difference fields.
 
-Formal held-out and keep-one scores are avg@3. The held-out execution order is
-`A0`, `A_last`, then earlier accepted generations; `A_last` is never evaluated
-twice. Submissions using avg@1 or a different ordering fail CI validation.
+Formal submissions require A0 and A_last held-out scores at avg@3. Terminal
+also requires earlier accepted-generation test scores and changed-module
+keep-one ablations at avg@3; `A_last` is never evaluated twice. Those extra
+evaluations are optional for the other domains.

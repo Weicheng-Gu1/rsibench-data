@@ -22,12 +22,12 @@ trajectories/
       splits.resolved.json
       provenance.json
       training-schedule.json
-      shared-module-ablation/          # terminal, changed SHARED_* only
+      shared-module-ablation/          # optional; terminal, changed SHARED_* only
         harnesses/manifest.json
         results.json
         results.csv
         trials/
-      pi-source-module-ablation/       # terminal Pi source, changed PI_SRC_* only
+      pi-source-module-ablation/       # optional; terminal Pi source, changed PI_SRC_* only
         results.json
         trials/
       ... complete run artifacts ...
@@ -82,21 +82,24 @@ accepted by default. Credentials, transient PID files, and local absolute paths
 are rejected before commit.
 
 Module ablations belong to the same immutable run, not separate leaderboard
-runs. They are produced only for `terminal` using changed-module keep-one
+runs. They are required for `terminal` and not required for the other domains;
+when produced, they apply only to `terminal`
+using changed-module keep-one
 semantics: each evaluated variant is `A0` plus exactly one module's accepted
 `A*` bytes. Claude Code and Codex may contain changed `SHARED_*` variants; Pi
 source runs may additionally contain changed `PI_SRC_*` variants. Unchanged
 modules are recorded in `skipped_unchanged_modules` and consume no rollout.
-`trajectory-manifest.json.ablations` indexes every applicable layer and exposes
+When present, `trajectory-manifest.json.ablations` indexes every evaluated layer and exposes
 compact `component_scores`; each layer's `results.json` and `trials/` retain the
 complete scores, token/cost accounting, and raw task-agent trajectories.
 Component scores are absolute `Only(Mi)` scores; new records do not calculate
 `Only(Mi)-A0` or `A*-Only(Mi)`.
 
-Current formal submissions use avg@3 throughout. Held-out evaluation order is
-`A0`, `A_last`, then every earlier accepted generation without duplicating
-`A_last`; completed changed-module keep-one layers also use avg@3. Pull-request
-validation rejects a different state policy, order, or ablation repeat count.
+Current formal submissions require A0 and A_last held-out scores at avg@3.
+Terminal additionally requires every accepted generation and changed-module
+keep-one layers at avg@3; those enrichments are optional for other domains.
+Pull-request validation rejects missing endpoint scores or malformed optional
+results.
 
 ## Rebuild The Leaderboard
 

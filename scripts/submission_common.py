@@ -90,7 +90,6 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
             "num_steps": 5,
             "train_rollouts_per_task": 3,
             "test_rollouts_per_task": 3,
-            "test_state_policy": "all-accepted",
         }
         mismatches = {
             key: protocol.get(key)
@@ -100,6 +99,14 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
         if mismatches:
             raise ValueError(
                 f"{path}: formal protocol mismatch {mismatches}; expected {expected}"
+            )
+        if protocol.get("test_state_policy") not in {"endpoints", "all-accepted"}:
+            raise ValueError(
+                f"{path}: test_state_policy must be endpoints or all-accepted"
+            )
+        if bench == "terminal" and protocol.get("test_state_policy") != "all-accepted":
+            raise ValueError(
+                f"{path}: formal Terminal requires test_state_policy=all-accepted"
             )
 
     artifacts = manifest["artifacts"]
@@ -126,12 +133,21 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
     score = manifest.get("score_and_cost") or {}
     if not isinstance(score, dict):
         raise ValueError(f"{path}: score_and_cost must be an object")
-    for key in ("V_test_A0", "V_test_AT", "delta_test"):
+    for key in ("V_test_A0", "V_test_AT"):
         value = score.get(key)
-        if value is not None and (
-            not isinstance(value, (int, float)) or not math.isfinite(float(value))
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
         ):
-            raise ValueError(f"{path}: {key} must be finite")
+            raise ValueError(f"{path}: required {key} must be finite")
+    delta = score.get("delta_test")
+    if delta is not None and (
+        isinstance(delta, bool)
+        or not isinstance(delta, (int, float))
+        or not math.isfinite(float(delta))
+    ):
+        raise ValueError(f"{path}: delta_test must be finite when supplied")
     history = manifest.get("candidate_history")
     if enforce_current_protocol:
         if not isinstance(history, dict) or history.get("schema_version") != 1:
@@ -153,38 +169,41 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
         ]
         expected_test_order = [0]
         if accepted_rounds:
-            expected_test_order.extend(
-                [accepted_rounds[-1], *accepted_rounds[:-1]]
-            )
+            expected_test_order.append(accepted_rounds[-1])
+            if protocol.get("test_state_policy") == "all-accepted":
+                expected_test_order.extend(accepted_rounds[:-1])
         if protocol.get("test_evaluation_order") != expected_test_order:
             raise ValueError(
-                f"{path}: test_evaluation_order must be "
-                f"A0, A_last, then earlier accepted generations: "
+                f"{path}: test_evaluation_order must contain A0 and A_last; "
+                f"earlier accepted generations are optional under all-accepted: "
                 f"expected {expected_test_order}, got "
                 f"{protocol.get('test_evaluation_order')!r}"
             )
 
         ablations = manifest.get("ablations")
-        if not isinstance(ablations, dict) or ablations.get("method") != (
-            "keep_one_changed_module"
-        ):
-            raise ValueError(f"{path}: keep-one ablation manifest is required")
-        layers = ablations.get("layers")
-        if not isinstance(layers, dict):
-            raise ValueError(f"{path}: ablation layers must be an object")
-        for layer, payload in layers.items():
-            if not isinstance(payload, dict):
-                raise ValueError(f"{path}: invalid ablation layer {layer}")
-            if payload.get("status") != "completed":
-                continue
-            if payload.get("rollouts_per_task") != 3:
-                raise ValueError(
-                    f"{path}: completed ablation layer {layer} must use avg@3"
-                )
-            if not isinstance(payload.get("component_scores"), dict):
-                raise ValueError(
-                    f"{path}: completed ablation layer {layer} has no component scores"
-                )
+        if bench == "terminal" and not isinstance(ablations, dict):
+            raise ValueError(f"{path}: formal Terminal requires keep-one ablations")
+        if ablations is not None:
+            if not isinstance(ablations, dict) or ablations.get("method") != (
+                "keep_one_changed_module"
+            ):
+                raise ValueError(f"{path}: invalid optional keep-one ablation manifest")
+            layers = ablations.get("layers")
+            if not isinstance(layers, dict):
+                raise ValueError(f"{path}: ablation layers must be an object")
+            for layer, payload in layers.items():
+                if not isinstance(payload, dict):
+                    raise ValueError(f"{path}: invalid ablation layer {layer}")
+                if payload.get("status") != "completed":
+                    continue
+                if payload.get("rollouts_per_task") != 3:
+                    raise ValueError(
+                        f"{path}: completed ablation layer {layer} must use avg@3"
+                    )
+                if not isinstance(payload.get("component_scores"), dict):
+                    raise ValueError(
+                        f"{path}: completed ablation layer {layer} has no component scores"
+                    )
     return manifest
 
 
