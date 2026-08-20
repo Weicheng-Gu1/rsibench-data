@@ -423,6 +423,26 @@ class SubmissionProtocolTest(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("Terminal requires test_state_policy=all-accepted", completed.stdout + completed.stderr)
 
+    def test_pr_validator_accepts_explicit_legacy_terminal_endpoints(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        manifest = add_manifest(self.repo)
+        value = json.loads(manifest.read_text())
+        value["protocol"].update(
+            submission_profile="legacy-endpoints-v1",
+            test_state_policy="endpoints",
+        )
+        value.pop("ablations")
+        manifest.write_text(json.dumps(value, indent=2) + "\n")
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "audited legacy endpoints")
+        head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        completed = subprocess.run(
+            [sys.executable, str(self.repo / "scripts/validate_submission.py"),
+             "--repo-root", str(self.repo), "--base", base, "--head", head],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
 
 class SubmissionWorkflowContractTest(unittest.TestCase):
     def test_receipt_workflow_supports_lossless_backfill_and_push_retry(self) -> None:
