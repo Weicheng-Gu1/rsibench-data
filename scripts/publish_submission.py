@@ -54,7 +54,7 @@ def main() -> int:
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--repository", required=True)
     parser.add_argument("--pull-request-json", type=Path, required=True)
-    parser.add_argument("--added-manifests-file", type=Path, required=True)
+    parser.add_argument("--added-manifests-file", type=Path)
     parser.add_argument("--remote", default="origin")
     parser.add_argument("--branch", default="main")
     parser.add_argument("--max-attempts", type=int, default=8)
@@ -86,17 +86,18 @@ def main() -> int:
         # derived feed a deterministic union rather than whichever run pushes last.
         git(root, "fetch", "--no-tags", args.remote, args.branch)
         git(root, "reset", "--hard", f"{args.remote}/{args.branch}")
-        subprocess.run(
-            [
-                sys.executable,
-                str(root / "scripts/record_submission.py"),
-                "--repo-root", str(root),
-                "--repository", args.repository,
-                *receipt_args,
-                "--added-manifests-file", str(args.added_manifests_file),
-            ],
-            check=True,
-        )
+        record_command = [
+            sys.executable,
+            str(root / "scripts/record_submission.py"),
+            "--repo-root", str(root),
+            "--repository", args.repository,
+            *receipt_args,
+        ]
+        if args.added_manifests_file is not None:
+            record_command.extend(
+                ["--added-manifests-file", str(args.added_manifests_file)]
+            )
+        subprocess.run(record_command, check=True)
         subprocess.run(
             [sys.executable, str(root / "scripts/build_leaderboard.py")],
             cwd=root,
