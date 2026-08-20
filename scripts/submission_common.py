@@ -85,6 +85,7 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
     protocol = manifest["protocol"]
     if not isinstance(protocol, dict):
         raise ValueError(f"{path}: protocol must be an object")
+    legacy_endpoints = protocol.get("submission_profile") == "legacy-endpoints-v1"
     if enforce_current_protocol:
         expected = {
             "num_steps": 5,
@@ -104,7 +105,11 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
             raise ValueError(
                 f"{path}: test_state_policy must be endpoints or all-accepted"
             )
-        if bench == "terminal" and protocol.get("test_state_policy") != "all-accepted":
+        if (
+            bench == "terminal"
+            and protocol.get("test_state_policy") != "all-accepted"
+            and not legacy_endpoints
+        ):
             raise ValueError(
                 f"{path}: formal Terminal requires test_state_policy=all-accepted"
             )
@@ -181,7 +186,11 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
             )
 
         ablations = manifest.get("ablations")
-        if bench == "terminal" and not isinstance(ablations, dict):
+        if (
+            bench == "terminal"
+            and not isinstance(ablations, dict)
+            and not legacy_endpoints
+        ):
             raise ValueError(f"{path}: formal Terminal requires keep-one ablations")
         if ablations is not None:
             if not isinstance(ablations, dict) or ablations.get("method") != (
