@@ -145,6 +145,114 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
         or not math.isfinite(float(delta))
     ):
         raise ValueError(f"{path}: delta_test must be finite when supplied")
+    endpoint_usage = score.get("held_out_test_usage")
+    if endpoint_usage is not None:
+        if not isinstance(endpoint_usage, dict):
+            raise ValueError(f"{path}: held_out_test_usage must be an object")
+        expected_usage = {
+            "schema_version": 1,
+            "scope": "held_out_test_A0_and_A_last_only",
+            "unit": "per_test_task_mean",
+            "rollouts_per_task": 3,
+        }
+        mismatches = {
+            key: endpoint_usage.get(key)
+            for key, expected_value in expected_usage.items()
+            if endpoint_usage.get(key) != expected_value
+        }
+        task_count = endpoint_usage.get("task_count")
+        if isinstance(task_count, bool) or not isinstance(task_count, int) or task_count < 1:
+            mismatches["task_count"] = task_count
+        if mismatches:
+            raise ValueError(f"{path}: invalid held-out endpoint usage contract {mismatches}")
+
+        endpoints: dict[str, dict[str, Any]] = {}
+        for endpoint_name in ("a0", "a_last"):
+            endpoint = endpoint_usage.get(endpoint_name)
+            if not isinstance(endpoint, dict):
+                raise ValueError(f"{path}: held_out_test_usage.{endpoint_name} must be an object")
+            endpoints[endpoint_name] = endpoint
+            for field in ("total_tokens", "tokens_per_task"):
+                value = endpoint.get(field)
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or float(value) < 0
+                ):
+                    raise ValueError(
+                        f"{path}: held_out_test_usage.{endpoint_name}.{field} must be nonnegative and finite"
+                    )
+            expected_per_task = float(endpoint["total_tokens"]) / task_count
+            if not math.isclose(
+                float(endpoint["tokens_per_task"]), expected_per_task, rel_tol=1e-9, abs_tol=1e-6
+            ):
+                raise ValueError(
+                    f"{path}: held_out_test_usage.{endpoint_name}.tokens_per_task is inconsistent"
+                )
+            cost = endpoint.get("cost_usd")
+            cost_per_task = endpoint.get("cost_usd_per_task")
+            if (cost is None) != (cost_per_task is None):
+                raise ValueError(
+                    f"{path}: held_out_test_usage.{endpoint_name} cost fields must both be null or numeric"
+                )
+            if cost is not None:
+                if any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or float(value) < 0
+                    for value in (cost, cost_per_task)
+                ):
+                    raise ValueError(
+                        f"{path}: held_out_test_usage.{endpoint_name} cost must be nonnegative and finite"
+                    )
+                if not math.isclose(
+                    float(cost_per_task), float(cost) / task_count, rel_tol=1e-9, abs_tol=1e-9
+                ):
+                    raise ValueError(
+                        f"{path}: held_out_test_usage.{endpoint_name}.cost_usd_per_task is inconsistent"
+                    )
+
+        usage_delta = endpoint_usage.get("delta")
+        if not isinstance(usage_delta, dict):
+            raise ValueError(f"{path}: held_out_test_usage.delta must be an object")
+        for field in ("tokens_per_task", "cost_usd_per_task"):
+            left = endpoints["a0"].get(field)
+            right = endpoints["a_last"].get(field)
+            supplied = usage_delta.get(field)
+            expected_delta = None if left is None or right is None else float(right) - float(left)
+            if expected_delta is None:
+                if supplied is not None:
+                    raise ValueError(f"{path}: held_out_test_usage.delta.{field} must be null")
+            elif (
+                isinstance(supplied, bool)
+                or not isinstance(supplied, (int, float))
+                or not math.isclose(float(supplied), expected_delta, rel_tol=1e-9, abs_tol=1e-6)
+            ):
+                raise ValueError(f"{path}: held_out_test_usage.delta.{field} is inconsistent")
+
+        pricing = endpoint_usage.get("pricing")
+        has_cost = endpoints["a0"].get("cost_usd") is not None
+        if has_cost and not isinstance(pricing, dict):
+            raise ValueError(f"{path}: priced held-out usage requires pricing provenance")
+        if manifest.get("model") == "gpt-5-5" and has_cost:
+            expected_prices = {
+                "model": "gpt-5.5",
+                "input_usd_per_million": 5.0,
+                "cached_input_usd_per_million": 0.5,
+                "output_usd_per_million": 30.0,
+                "source": "https://developers.openai.com/api/docs/models/gpt-5.5",
+            }
+            price_mismatches = {
+                key: pricing.get(key)
+                for key, expected_value in expected_prices.items()
+                if pricing.get(key) != expected_value
+            }
+            if price_mismatches:
+                raise ValueError(
+                    f"{path}: GPT-5.5 held-out cost must use public list pricing {price_mismatches}"
+                )
     history = manifest.get("candidate_history")
     if enforce_current_protocol:
         if not isinstance(history, dict) or history.get("schema_version") != 1:
@@ -263,26 +371,9 @@ def trusted_site_record(
             "receipt_path": receipt["receipt_path"],
         },
     }
-    token_values = [
-        score.get("task_agent_tokens_A0"),
-        score.get("task_agent_tokens_AT"),
-        score.get("meta_agent_tokens"),
-        score.get("round_task_agent_tokens"),
-        score.get("module_ablation_task_agent_tokens"),
-    ]
-    cost_values = [
-        score.get("task_agent_usd_A0"),
-        score.get("task_agent_usd_AT"),
-        score.get("meta_agent_usd"),
-        score.get("round_task_agent_usd"),
-        score.get("module_ablation_task_agent_usd"),
-    ]
-    numeric_tokens = [float(value) for value in token_values if isinstance(value, (int, float))]
-    numeric_costs = [float(value) for value in cost_values if isinstance(value, (int, float))]
-    if numeric_tokens:
-        record["total_tokens"] = round(sum(numeric_tokens))
-    if numeric_costs:
-        record["total_cost_usd"] = round(sum(numeric_costs), 8)
+    endpoint_usage = score.get("held_out_test_usage")
+    if isinstance(endpoint_usage, dict):
+        record["held_out_test_usage"] = endpoint_usage
     return record
 
 

@@ -83,6 +83,13 @@ FIELDS = (
     "total_cost_usd",
     "cost_estimate_status",
     "cost_pricing",
+    "held_out_test_usage",
+    "test_cost_usd_per_task_A0",
+    "test_cost_usd_per_task_AT",
+    "test_cost_usd_per_task_delta",
+    "test_tokens_per_task_A0",
+    "test_tokens_per_task_AT",
+    "test_tokens_per_task_delta",
     "artifact_path",
 )
 
@@ -91,9 +98,52 @@ def load_cost_estimates() -> dict[str, dict[str, object]]:
     if not COST_ESTIMATES.is_file():
         return {}
     payload = json.loads(COST_ESTIMATES.read_text(encoding="utf-8"))
-    if payload.get("schema_version") != 1 or not isinstance(payload.get("runs"), dict):
+    if payload.get("schema_version") != 2 or not isinstance(payload.get("runs"), dict):
         raise ValueError(f"invalid cost estimate registry: {COST_ESTIMATES}")
     return payload["runs"]
+
+
+def apply_endpoint_usage(
+    target: dict[str, object], usage: dict[str, object], *, csv_row: bool
+) -> None:
+    """Expose only held-out TEST A0/A_last usage and per-task deltas."""
+    if usage.get("scope") != "held_out_test_A0_and_A_last_only":
+        raise ValueError("cost/token usage must be held-out TEST A0/A_last only")
+    a0 = usage.get("a0")
+    a_last = usage.get("a_last")
+    delta = usage.get("delta")
+    if not all(isinstance(value, dict) for value in (a0, a_last, delta)):
+        raise ValueError("held-out TEST usage is missing endpoint objects")
+    assert isinstance(a0, dict) and isinstance(a_last, dict) and isinstance(delta, dict)
+
+    mapping = {
+        "test_cost_usd_per_task_A0": a0.get("cost_usd_per_task"),
+        "test_cost_usd_per_task_AT": a_last.get("cost_usd_per_task"),
+        "test_cost_usd_per_task_delta": delta.get("cost_usd_per_task"),
+        "test_tokens_per_task_A0": a0.get("tokens_per_task"),
+        "test_tokens_per_task_AT": a_last.get("tokens_per_task"),
+        "test_tokens_per_task_delta": delta.get("tokens_per_task"),
+    }
+    target.update(mapping)
+    target["held_out_test_usage"] = (
+        json.dumps(usage, sort_keys=True) if csv_row else usage
+    )
+    pricing = usage.get("pricing")
+    target["cost_pricing"] = (
+        json.dumps(pricing or {}, sort_keys=True) if csv_row else pricing
+    )
+    statuses = {a0.get("cost_status"), a_last.get("cost_status")}
+    target["cost_estimate_status"] = (
+        next(iter(statuses)) if len(statuses) == 1 else "mixed_endpoint_estimate"
+    )
+    endpoint_tokens = [a0.get("total_tokens"), a_last.get("total_tokens")]
+    if all(isinstance(value, (int, float)) for value in endpoint_tokens):
+        target["total_tokens"] = round(sum(float(value) for value in endpoint_tokens))
+    endpoint_costs = [a0.get("cost_usd"), a_last.get("cost_usd")]
+    if all(isinstance(value, (int, float)) for value in endpoint_costs):
+        target["total_cost_usd"] = round(
+            sum(float(value) for value in endpoint_costs), 8
+        )
 
 
 def row_from_manifest(
@@ -157,19 +207,23 @@ def main() -> int:
     rows = [row for row, _ in indexed]
     site_records = [record for _, record in indexed if record is not None]
     for row in rows:
+        manifest_usage = row.get("held_out_test_usage")
+        if isinstance(manifest_usage, dict):
+            apply_endpoint_usage(row, manifest_usage, csv_row=True)
         estimate = cost_estimates.get(str(row["run_id"]))
         if estimate:
-            for field in ("total_tokens", "total_cost_usd", "cost_estimate_status"):
-                row[field] = estimate.get(field)
-            row["cost_pricing"] = json.dumps(
-                estimate.get("pricing") or {}, sort_keys=True
-            )
+            usage = estimate.get("held_out_test_usage")
+            if isinstance(usage, dict):
+                apply_endpoint_usage(row, usage, csv_row=True)
     for record in site_records:
+        manifest_usage = record.get("held_out_test_usage")
+        if isinstance(manifest_usage, dict):
+            apply_endpoint_usage(record, manifest_usage, csv_row=False)
         estimate = cost_estimates.get(str(record["run_id"]))
         if estimate:
-            for field in ("total_tokens", "total_cost_usd", "cost_estimate_status"):
-                record[field] = estimate.get(field)
-            record["cost_pricing"] = estimate.get("pricing")
+            usage = estimate.get("held_out_test_usage")
+            if isinstance(usage, dict):
+                apply_endpoint_usage(record, usage, csv_row=False)
     rows.sort(key=lambda row: (str(row["subset"]), str(row["model"]), str(row["harness"]), str(row["run_id"])))
     LEADERBOARD.mkdir(parents=True, exist_ok=True)
     with (LEADERBOARD / "results.csv").open("w", newline="") as handle:

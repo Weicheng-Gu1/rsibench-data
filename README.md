@@ -100,6 +100,13 @@ later as a new immutable supplemental submission. Pull-request validation
 rejects missing endpoint scores and strictly validates any optional results that
 are present.
 
+Public cost/token columns have one narrow meaning: the separately executed
+held-out TEST rollouts for A0 and A_last only. They exclude training, Meta-agent,
+candidate validation, intermediate accepted generations, retries, and ablation.
+The feed reports A0 → A_last as a per-test-task mean (three rollouts are included
+inside each task), plus `A_last - A0`. List-price estimates retain their pricing
+source and effective date; missing prices remain null rather than becoming $0.
+
 ## Rebuild The Leaderboard
 
 ```bash

@@ -165,13 +165,35 @@ class SubmissionProtocolTest(unittest.TestCase):
         pricing = self.repo / "pricing/cost-estimates.json"
         pricing.parent.mkdir()
         pricing.write_text(json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
             "runs": {
                 "formal-terminal-glm-5-2-pi-test": {
-                    "total_tokens": 1234,
-                    "total_cost_usd": 5.67,
-                    "cost_estimate_status": "list_price_estimate",
-                    "pricing": {"input_usd_per_million": 1.0},
+                    "held_out_test_usage": {
+                        "schema_version": 1,
+                        "scope": "held_out_test_A0_and_A_last_only",
+                        "unit": "per_test_task_mean",
+                        "task_count": 1,
+                        "rollouts_per_task": 3,
+                        "a0": {
+                            "total_tokens": 500,
+                            "tokens_per_task": 500,
+                            "cost_usd": 2.0,
+                            "cost_usd_per_task": 2.0,
+                            "cost_status": "list_price_estimate",
+                        },
+                        "a_last": {
+                            "total_tokens": 734,
+                            "tokens_per_task": 734,
+                            "cost_usd": 3.67,
+                            "cost_usd_per_task": 3.67,
+                            "cost_status": "list_price_estimate",
+                        },
+                        "delta": {
+                            "tokens_per_task": 234,
+                            "cost_usd_per_task": 1.67,
+                        },
+                        "pricing": {"input_usd_per_million": 1.0},
+                    }
                 }
             },
         }) + "\n")
@@ -191,6 +213,12 @@ class SubmissionProtocolTest(unittest.TestCase):
         self.assertEqual(result["total_tokens"], 1234)
         self.assertEqual(result["total_cost_usd"], 5.67)
         self.assertEqual(result["cost_estimate_status"], "list_price_estimate")
+        self.assertEqual(result["test_tokens_per_task_A0"], 500)
+        self.assertEqual(result["test_tokens_per_task_AT"], 734)
+        self.assertEqual(result["test_tokens_per_task_delta"], 234)
+        self.assertEqual(result["test_cost_usd_per_task_A0"], 2.0)
+        self.assertEqual(result["test_cost_usd_per_task_AT"], 3.67)
+        self.assertEqual(result["test_cost_usd_per_task_delta"], 1.67)
         self.assertEqual(result["submission"]["github_login"], "alice")
         self.assertEqual(result["submission"]["github_user_id"], 123)
         self.assertEqual(result["submission"]["pull_request"], 17)
@@ -355,6 +383,35 @@ class SubmissionProtocolTest(unittest.TestCase):
         )
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("required V_test_AT must be finite", completed.stdout + completed.stderr)
+
+    def test_pr_validator_rejects_inconsistent_held_out_usage(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        manifest = add_manifest(self.repo)
+        value = json.loads(manifest.read_text())
+        value["score_and_cost"]["held_out_test_usage"] = {
+            "schema_version": 1,
+            "scope": "held_out_test_A0_and_A_last_only",
+            "unit": "per_test_task_mean",
+            "task_count": 1,
+            "rollouts_per_task": 3,
+            "a0": {"total_tokens": 10, "tokens_per_task": 10, "cost_usd": None,
+                   "cost_usd_per_task": None, "cost_status": "missing_public_price"},
+            "a_last": {"total_tokens": 20, "tokens_per_task": 20, "cost_usd": None,
+                       "cost_usd_per_task": None, "cost_status": "missing_public_price"},
+            "delta": {"tokens_per_task": 999, "cost_usd_per_task": None},
+            "pricing": None,
+        }
+        manifest.write_text(json.dumps(value, indent=2) + "\n")
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "bad held-out usage")
+        head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        completed = subprocess.run(
+            [sys.executable, str(self.repo / "scripts/validate_submission.py"),
+             "--repo-root", str(self.repo), "--base", base, "--head", head],
+            text=True, capture_output=True,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("delta.tokens_per_task is inconsistent", completed.stdout + completed.stderr)
 
     def test_pr_validator_rejects_avg1_completed_ablation(self) -> None:
         base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
