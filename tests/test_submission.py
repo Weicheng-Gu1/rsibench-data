@@ -162,6 +162,19 @@ class SubmissionProtocolTest(unittest.TestCase):
             text=True, capture_output=True,
         )
         self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        pricing = self.repo / "pricing/cost-estimates.json"
+        pricing.parent.mkdir()
+        pricing.write_text(json.dumps({
+            "schema_version": 1,
+            "runs": {
+                "formal-terminal-glm-5-2-pi-test": {
+                    "total_tokens": 1234,
+                    "total_cost_usd": 5.67,
+                    "cost_estimate_status": "list_price_estimate",
+                    "pricing": {"input_usd_per_million": 1.0},
+                }
+            },
+        }) + "\n")
         built = subprocess.run(
             [sys.executable, str(self.repo / "scripts/build_leaderboard.py")],
             text=True, capture_output=True,
@@ -175,6 +188,9 @@ class SubmissionProtocolTest(unittest.TestCase):
         self.assertEqual(result["baseline_score"], 10.0)
         self.assertEqual(result["final_score"], 20.0)
         self.assertEqual(result["lift"], 10.0)
+        self.assertEqual(result["total_tokens"], 1234)
+        self.assertEqual(result["total_cost_usd"], 5.67)
+        self.assertEqual(result["cost_estimate_status"], "list_price_estimate")
         self.assertEqual(result["submission"]["github_login"], "alice")
         self.assertEqual(result["submission"]["github_user_id"], 123)
         self.assertEqual(result["submission"]["pull_request"], 17)

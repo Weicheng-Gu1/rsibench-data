@@ -19,6 +19,7 @@ from submission_common import (
 ROOT = Path(__file__).resolve().parents[1]
 TRAJECTORIES = ROOT / "trajectories"
 LEADERBOARD = ROOT / "leaderboard"
+COST_ESTIMATES = ROOT / "pricing" / "cost-estimates.json"
 FIELDS = (
     "published_at_utc",
     "subset",
@@ -78,8 +79,21 @@ FIELDS = (
     "legacy_pi_workspace_component_scores",
     "shared_resources_component_scores",
     "pi_core_source_component_scores",
+    "total_tokens",
+    "total_cost_usd",
+    "cost_estimate_status",
+    "cost_pricing",
     "artifact_path",
 )
+
+
+def load_cost_estimates() -> dict[str, dict[str, object]]:
+    if not COST_ESTIMATES.is_file():
+        return {}
+    payload = json.loads(COST_ESTIMATES.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != 1 or not isinstance(payload.get("runs"), dict):
+        raise ValueError(f"invalid cost estimate registry: {COST_ESTIMATES}")
+    return payload["runs"]
 
 
 def row_from_manifest(
@@ -135,12 +149,27 @@ def row_from_manifest(
 
 def main() -> int:
     receipts, receipt_list = load_receipts(ROOT)
+    cost_estimates = load_cost_estimates()
     manifests = manifest_paths(ROOT)
     indexed = []
     for path in manifests:
         indexed.append(row_from_manifest(path, receipts))
     rows = [row for row, _ in indexed]
     site_records = [record for _, record in indexed if record is not None]
+    for row in rows:
+        estimate = cost_estimates.get(str(row["run_id"]))
+        if estimate:
+            for field in ("total_tokens", "total_cost_usd", "cost_estimate_status"):
+                row[field] = estimate.get(field)
+            row["cost_pricing"] = json.dumps(
+                estimate.get("pricing") or {}, sort_keys=True
+            )
+    for record in site_records:
+        estimate = cost_estimates.get(str(record["run_id"]))
+        if estimate:
+            for field in ("total_tokens", "total_cost_usd", "cost_estimate_status"):
+                record[field] = estimate.get(field)
+            record["cost_pricing"] = estimate.get("pricing")
     rows.sort(key=lambda row: (str(row["subset"]), str(row["model"]), str(row["harness"]), str(row["run_id"])))
     LEADERBOARD.mkdir(parents=True, exist_ok=True)
     with (LEADERBOARD / "results.csv").open("w", newline="") as handle:

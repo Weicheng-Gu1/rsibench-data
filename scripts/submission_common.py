@@ -281,12 +281,14 @@ def trusted_site_record(
         score.get("task_agent_tokens_A0"),
         score.get("task_agent_tokens_AT"),
         score.get("meta_agent_tokens"),
+        score.get("round_task_agent_tokens"),
         score.get("module_ablation_task_agent_tokens"),
     ]
     cost_values = [
         score.get("task_agent_usd_A0"),
         score.get("task_agent_usd_AT"),
         score.get("meta_agent_usd"),
+        score.get("round_task_agent_usd"),
         score.get("module_ablation_task_agent_usd"),
     ]
     numeric_tokens = [float(value) for value in token_values if isinstance(value, (int, float))]
