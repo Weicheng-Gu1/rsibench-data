@@ -451,7 +451,8 @@ class SubmissionWorkflowContractTest(unittest.TestCase):
         self.assertIn("pull_request:", workflow)
         self.assertIn("scripts/publish_submission.py", workflow)
         self.assertIn("--max-attempts 8", workflow)
-        self.assertIn("gh api --paginate", workflow)
+        self.assertNotIn("pulls/$PULL_REQUEST/files", workflow)
+        self.assertNotIn("--added-manifests-file", workflow)
         self.assertNotIn("queue: max", workflow)
         self.assertNotIn("group: rsibench-submission-receipts", workflow)
 
