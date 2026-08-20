@@ -1,0 +1,67 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 5827cec..7821785 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -63,6 +63,27 @@ export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
+ // states nothing mechanically checkable, and disableable via config.
+ // ---------------------------------------------------------------------------
+ 
++/**
++ * A deliverable the task names by path is the only thing the grader can read.
++ * Runs here end at a hard wall-clock deadline, and the archived failures show a
++ * distinct shape: the run spends the entire budget probing the problem and never
++ * creates the named file at all, so the deadline arrives with nothing to grade.
++ * That is not a stale answer and not a wrong answer - it is an absent one.
++ *
++ * Grace period before the absence of a named deliverable is worth a turn. Every
++ * run legitimately explores first, and a run that produces the file in its first
++ * minutes must never be interrupted.
++ */
++const DELIVERABLE_GRACE_MS = 480_000;
++
++/**
++ * Tool calls that must have happened before the absence is a real signal. Kept
++ * small on purpose: a run that has burned the grace period inside two or three
++ * very long commands and still has nothing at the named path is in exactly the
++ * same position as one that made thirty short ones.
++ */
++const DELIVERABLE_MIN_CALLS = 3;
++
+ const AUDIT_DEFAULTS = {
+ 	enabled: true,
+ 	maxNotices: 3,
+@@ -70,9 +91,9 @@ const AUDIT_DEFAULTS = {
+ 	maxRepeatNotices: 2,
+ 	repeatThreshold: 3,
+ 	/** Milliseconds of wall clock after which a never-created deliverable is reported. */
+-	deliverableGraceMs: 480_000,
++	deliverableGraceMs: DELIVERABLE_GRACE_MS,
+ 	/** Tool calls that must have happened before a never-created deliverable is reported. */
+-	deliverableMinCalls: 10,
++	deliverableMinCalls: DELIVERABLE_MIN_CALLS,
+ } as const;
+ 
+ /** Command heads that denote a real, externally observable action worth re-checking. */
+@@ -770,22 +791,6 @@ interface AuditFinding {
+ 	text: string;
+ }
+ 
+-/**
+- * A deliverable the task names by path is the only thing the grader can read.
+- * Runs here end at a hard wall-clock deadline, and the archived failures show a
+- * distinct shape: the run spends the entire budget probing the problem and never
+- * creates the named file at all, so the deadline arrives with nothing to grade.
+- * That is not a stale answer and not a wrong answer - it is an absent one.
+- *
+- * Grace period before the absence of a named deliverable is worth a turn. Every
+- * run legitimately explores first, and a run that produces the file in its first
+- * minutes must never be interrupted.
+- */
+-const DELIVERABLE_GRACE_MS = 480_000;
+-
+-/** Tool calls that must have happened before the absence is a real signal. */
+-const DELIVERABLE_MIN_CALLS = 10;
+-
+ /**
+  * Deliverable existence, checked once against the wall clock.
+  *

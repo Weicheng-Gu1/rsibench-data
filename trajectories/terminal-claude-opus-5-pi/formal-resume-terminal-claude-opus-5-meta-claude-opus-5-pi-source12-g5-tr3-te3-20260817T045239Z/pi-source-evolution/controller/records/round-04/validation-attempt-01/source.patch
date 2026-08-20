@@ -1,0 +1,183 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index f63f65b..028888c 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -49,7 +49,17 @@ export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
+ //    distinguished from a general solution;
+ //  - the task states an explicit multi-field output structure, every field of
+ //    which is graded separately, so validating one field is not validating the
+-//    answer.
++//    answer;
++//  - the file the task names as its answer is stale: the run has spent many
++//    tool calls since it was last written, so if the deadline arrives now the
++//    grader reads an answer the run itself no longer believes.
++//
++// The last point is what makes the others safe. Runs here are cut off by a hard
++// wall-clock deadline, and a run that is investigating whether its answer is
++// good enough is precisely the run most likely to be cut off holding a better
++// answer it never wrote down. Everything the grader sees must therefore be kept
++// current in the graded file while the investigation continues, not committed
++// after it concludes.
+ //
+ // Notices are bounded, deduplicated by finding signature, skipped when the task
+ // states nothing mechanically checkable, and disableable via config.
+@@ -61,6 +71,14 @@ const AUDIT_DEFAULTS = {
+ 	checkpointTurns: 8,
+ 	maxRepeatNotices: 2,
+ 	repeatThreshold: 3,
++	/** Maximum number of answer-durability notices injected per run. */
++	maxAnswerNotices: 2,
++	/** Tool calls without touching the graded answer file before it counts as stale. */
++	answerStaleCalls: 12,
++	/** Tool calls that must have happened before an uncommitted-answer notice is worth a turn. */
++	answerMinCalls: 12,
++	/** Tool calls that must have happened before a stale-answer notice is worth a turn. */
++	answerStaleMinCalls: 24,
+ } as const;
+ 
+ /** Command heads that denote a real, externally observable action worth re-checking. */
+@@ -257,6 +275,11 @@ interface TaskContractAuditState {
+ 	startedAt: number;
+ 	maxNotices: number;
+ 	checkpointTurns: number;
++	/** Tool calls without touching the graded answer file before it counts as stale. */
++	answerStaleCalls: number;
++	/** Answer-durability notices already injected in this run. */
++	answerNoticesEmitted: number;
++	maxAnswerNotices: number;
+ }
+ 
+ function messageText(message: AgentMessage): string {
+@@ -477,6 +500,9 @@ function createTaskContractAuditState(
+ 		startedAt: Date.now(),
+ 		maxNotices: Math.max(0, overrides?.maxNotices ?? AUDIT_DEFAULTS.maxNotices),
+ 		checkpointTurns: Math.max(1, overrides?.checkpointTurns ?? AUDIT_DEFAULTS.checkpointTurns),
++		answerStaleCalls: Math.max(2, overrides?.answerStaleCalls ?? AUDIT_DEFAULTS.answerStaleCalls),
++		answerNoticesEmitted: 0,
++		maxAnswerNotices: Math.max(0, overrides?.maxAnswerNotices ?? AUDIT_DEFAULTS.maxAnswerNotices),
+ 	};
+ }
+ 
+@@ -749,6 +775,89 @@ interface AuditFinding {
+ 	text: string;
+ }
+ 
++/**
++ * Answer-durability findings are pointless in the opening exploration phase:
++ * every run legitimately spends its first calls reading the inputs before it can
++ * write anything. They only become informative once the run has had enough
++ * observations to form a first answer.
++ */
++const ANSWER_MIN_CALLS = AUDIT_DEFAULTS.answerMinCalls;
++
++/**
++ * A gap between writes is only evidence of a deferred answer once the run is
++ * well past its first commit: a run that writes the answer early and then spends
++ * a normal amount of budget confirming it is behaving correctly.
++ */
++const ANSWER_STALE_MIN_CALLS = AUDIT_DEFAULTS.answerStaleMinCalls;
++
++/**
++ * Answer durability.
++ *
++ * Runs here end at a hard wall-clock deadline and the external grader reads the
++ * file named by the task at whatever state it is in at that instant. A run that
++ * defers writing its answer until an open-ended investigation concludes is
++ * therefore betting the entire score on finishing that investigation in time,
++ * and the two failure shapes are directly observable from the run's own tool
++ * calls:
++ *
++ *  - the task names an output file and, after enough calls to have formed a
++ *    first answer, nothing has created it; or
++ *  - the file exists but has not been rewritten for a long stretch of calls,
++ *    while the run kept producing new observations - everything learned since
++ *    then lives only in the conversation and dies with the deadline.
++ *
++ * This check runs on every turn rather than on the contract-checkpoint cadence,
++ * because the window in which it is still actionable is measured in tool calls,
++ * not in multiples of the checkpoint interval. It has its own small budget so it
++ * cannot crowd out the contract findings.
++ */
++function runAnswerDurabilityGuard(state: TaskContractAuditState, signal: AbortSignal | undefined): AgentMessage[] {
++	if (!state.enabled || signal?.aborted) return [];
++	if (state.answerNoticesEmitted >= state.maxAnswerNotices) return [];
++	if (state.callIndex < ANSWER_MIN_CALLS) return [];
++
++	const findings: AuditFinding[] = [];
++	for (const obligation of state.obligations) {
++		if (obligation.kind !== "artifact") continue;
++		const producedAt = state.artifactProducedAt.get(obligation.id);
++		if (!state.producedArtifacts.has(obligation.id) || !producedAt) {
++			findings.push({
++				signature: `answer-uncommitted:${obligation.id}`,
++				text: `The task names \`${obligation.display}\` as the file it is graded on, and after ${state.callIndex} tool calls nothing in this run has created it. This run ends at a hard wall-clock deadline, and whatever grades it reads that file at that moment - not your analysis, not this conversation. Write your current best answer to \`${obligation.display}\` now, in the exact structure the task specifies, even though you are not finished: a committed approximate answer can score, an uncommitted better one cannot. Then keep working and overwrite the file every time you have something better.`,
++			});
++			continue;
++		}
++		if (state.callIndex < ANSWER_STALE_MIN_CALLS) continue;
++		const staleFor = state.callIndex - producedAt.call;
++		if (staleFor < state.answerStaleCalls) continue;
++		findings.push({
++			// Bucketed so a run that keeps investigating without writing can be
++			// reminded again much later, but never twice for the same stretch.
++			signature: `answer-stale:${obligation.id}:${Math.floor(state.callIndex / Math.max(1, state.answerStaleCalls * 2))}`,
++			text: `\`${obligation.display}\` has not been rewritten for ${staleFor} tool calls. Everything you have learned in those calls exists only in this conversation; this run ends at a hard wall-clock deadline and if it arrives now the grader reads the older answer, including any field you have since decided is wrong or not converged. If your current understanding gives a better value for any graded field than the one in that file, write the improved answer to \`${obligation.display}\` immediately, then carry on - refine the answer file in place instead of holding it back until a diagnostic finishes. If a line of investigation has run several attempts without improving any graded field, stop it and spend the remaining budget confirming the answer you already have.`,
++		});
++	}
++
++	const fresh = findings.filter((finding) => !state.reportedSignatures.has(finding.signature));
++	if (fresh.length === 0) return [];
++	for (const finding of fresh) state.reportedSignatures.add(finding.signature);
++	state.answerNoticesEmitted += 1;
++
++	const elapsedSeconds = Math.round((Date.now() - state.startedAt) / 1000);
++	const header = `[pi harness] Automatic answer-durability check (${elapsedSeconds}s elapsed, ${state.callIndex} tool calls). This is not a message from the user.`;
++	const body = fresh.map((finding, index) => `${index + 1}. ${finding.text}`).join("\n");
++	const footer =
++		"Act on this now, in one step, before continuing whatever you were doing; then continue. If the file already holds your best current values for every graded field, say so in one line and continue.";
++
++	return [
++		{
++			role: "user",
++			content: [{ type: "text", text: `${header}\n\n${body}\n\n${footer}` }],
++			timestamp: Date.now(),
++		} satisfies AgentMessage,
++	];
++}
++
+ function collectAuditFindings(state: TaskContractAuditState, phase: "checkpoint" | "exit"): AuditFinding[] {
+ 	const findings: AuditFinding[] = [];
+ 	const commandObligations = state.obligations.filter((o) => o.kind === "command");
+@@ -1157,6 +1266,13 @@ async function runLoop(
+ 				// urgent signal because it burns the deadline without changing state.
+ 				pendingMessages = runRepeatGuard(auditState, signal);
+ 			}
++			if (pendingMessages.length === 0 && hasMoreToolCalls) {
++				// Answer durability before the periodic contract checkpoint: the graded
++				// file being absent or stale is only actionable while budget remains,
++				// and a run cut off by the deadline is graded on the file, not on what
++				// it had concluded.
++				pendingMessages = runAnswerDurabilityGuard(auditState, signal);
++			}
+ 			if (pendingMessages.length === 0 && hasMoreToolCalls) {
+ 				// Mid-run checkpoint: surface obligations that are already provably
+ 				// unmet while there is still budget to act on them.
+diff --git a/packages/agent/src/types.ts b/packages/agent/src/types.ts
+index d084ce1..c95d1f0 100644
+--- a/packages/agent/src/types.ts
++++ b/packages/agent/src/types.ts
+@@ -165,6 +165,14 @@ export interface TaskContractAuditConfig {
+ 	checkpointTurns?: number;
+ 	/** Number of near-identical shell invocations that triggers a repeat notice. Default: 3. */
+ 	repeatThreshold?: number;
++	/**
++	 * Tool calls that may pass without the task's named output file being written
++	 * before the run is reminded that the grader reads that file at the deadline.
++	 * Default: 12.
++	 */
++	answerStaleCalls?: number;
++	/** Maximum number of answer-durability notices injected per run. Default: 2. */
++	maxAnswerNotices?: number;
+ }
+ 
+ export interface AgentLoopConfig extends SimpleStreamOptions {

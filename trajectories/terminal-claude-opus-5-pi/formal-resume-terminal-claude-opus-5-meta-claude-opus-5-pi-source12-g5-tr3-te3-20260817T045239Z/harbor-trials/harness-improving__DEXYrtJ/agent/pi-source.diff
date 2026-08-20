@@ -1,0 +1,79 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 43eb0aa..c54f351 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -193,6 +193,8 @@ interface TaskContractAuditState {
+ 	repeatThreshold: number;
+ 	exercises: Map<string, ExercisePoint[]>;
+ 	producedArtifacts: Set<string>;
++	/** Obligation id -> position of the last tool call that produced or referenced it. */
++	artifactProducedAt: Map<string, { call: number; offset: number }>;
+ 	createdDirs: string[];
+ 	lastDestructive?: { call: number; offset: number; command: string };
+ 	callIndex: number;
+@@ -379,6 +381,7 @@ function createTaskContractAuditState(
+ 		repeatThreshold: Math.max(2, overrides?.repeatThreshold ?? AUDIT_DEFAULTS.repeatThreshold),
+ 		exercises: new Map(),
+ 		producedArtifacts: new Set(),
++		artifactProducedAt: new Map(),
+ 		createdDirs: [],
+ 		callIndex: 0,
+ 		turnIndex: 0,
+@@ -480,8 +483,14 @@ function recordBashCall(state: TaskContractAuditState, rawCommand: string): void
+ 	for (const obligation of state.obligations) {
+ 		if (obligation.kind === "artifact") {
+ 			const basename = obligation.normalized.split("/").pop() ?? obligation.normalized;
+-			if (normalized.includes(obligation.normalized) || (basename.length > 3 && normalized.includes(basename))) {
++			const hit = normalized.includes(obligation.normalized)
++				? normalized.indexOf(obligation.normalized)
++				: basename.length > 3 && normalized.includes(basename)
++					? normalized.indexOf(basename)
++					: -1;
++			if (hit !== -1) {
+ 				state.producedArtifacts.add(obligation.id);
++				state.artifactProducedAt.set(obligation.id, { call: state.callIndex, offset: hit });
+ 			}
+ 			continue;
+ 		}
+@@ -578,6 +587,7 @@ function recordTurnForAudit(state: TaskContractAuditState, message: AssistantMes
+ 				(basename.length > 3 && written.includes(basename))
+ 			) {
+ 				state.producedArtifacts.add(obligation.id);
++				state.artifactProducedAt.set(obligation.id, { call: state.callIndex, offset: 0 });
+ 			}
+ 		}
+ 	}
+@@ -690,11 +700,28 @@ function collectAuditFindings(state: TaskContractAuditState, phase: "checkpoint"
+ 	if (phase === "exit") {
+ 		for (const obligation of state.obligations) {
+ 			if (obligation.kind !== "artifact") continue;
+-			if (state.producedArtifacts.has(obligation.id)) continue;
+-			findings.push({
+-				signature: `artifact-missing:${obligation.id}`,
+-				text: `The task names \`${obligation.display}\` as an output, but no tool call in this run has created or referenced it. Produce it and verify its contents before finishing.`,
+-			});
++			if (!state.producedArtifacts.has(obligation.id)) {
++				findings.push({
++					signature: `artifact-missing:${obligation.id}`,
++					text: `The task names \`${obligation.display}\` as an output, but no tool call in this run has created or referenced it. Produce it and verify its contents before finishing.`,
++				});
++				continue;
++			}
++			// 5. Exit only: the artifact was produced, but a later destructive action
++			//    can have removed it and nothing has touched it since. The grader reads
++			//    the final filesystem, not the moment the file first appeared.
++			const producedAt = state.artifactProducedAt.get(obligation.id);
++			if (
++				destructive &&
++				producedAt &&
++				(destructive.call > producedAt.call ||
++					(destructive.call === producedAt.call && destructive.offset > producedAt.offset))
++			) {
++				findings.push({
++					signature: `artifact-stale:${obligation.id}:${destructive.call}:${destructive.offset}`,
++					text: `\`${obligation.display}\` was last produced or referenced before this run ran \`${destructive.command}\`, and nothing has touched it since. Confirm it still exists with the expected contents in the final state, and re-create it if the destructive step removed it.`,
++				});
++			}
+ 		}
+ 	}
+ 
