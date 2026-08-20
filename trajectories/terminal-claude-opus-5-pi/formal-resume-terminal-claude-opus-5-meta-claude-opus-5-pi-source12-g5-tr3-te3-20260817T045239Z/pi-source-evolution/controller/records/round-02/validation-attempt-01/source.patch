@@ -1,0 +1,871 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 3a12506..43eb0aa 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -20,10 +20,723 @@ import type {
+ 	AgentToolCall,
+ 	AgentToolResult,
+ 	StreamFn,
++	TaskContractAuditConfig,
+ } from "./types.ts";
+ 
+ export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
+ 
++// ---------------------------------------------------------------------------
++// Task-contract audit
++//
++// The external grader of an agent run judges the final environment state against
++// the literal obligations stated in the task text, not against the agent's own
++// belief that it is done. The loop therefore derives those obligations
++// deterministically from the task text at run start, records how each turn's
++// tool calls actually exercised them, and injects a short machine-generated
++// notice when the run is provably about to hand back a state that the task text
++// says is not yet demonstrated:
++//
++//  - a command quoted verbatim in the task was never executed as written;
++//  - the task's quoted commands all succeeded once, but the environment was
++//    destructively changed afterwards and nothing was re-verified since;
++//  - a quoted code snippet was only ever executed with a working directory
++//    inside a directory this run itself created (a build tree), so it proves
++//    the local tree rather than the global state a grader observes;
++//  - a file the task names as an output was never created or referenced.
++//
++// Notices are bounded, deduplicated by finding signature, skipped when the task
++// states nothing mechanically checkable, and disableable via config.
++// ---------------------------------------------------------------------------
++
++const AUDIT_DEFAULTS = {
++	enabled: true,
++	maxNotices: 3,
++	checkpointTurns: 8,
++	maxRepeatNotices: 2,
++	repeatThreshold: 3,
++} as const;
++
++/** Command heads that denote a real, externally observable action worth re-checking. */
++const EXECUTABLE_HEADS = new Set([
++	"apt",
++	"apt-get",
++	"bash",
++	"cargo",
++	"cmake",
++	"curl",
++	"docker",
++	"g++",
++	"gcc",
++	"git",
++	"go",
++	"gradle",
++	"java",
++	"javac",
++	"make",
++	"mvn",
++	"nginx",
++	"node",
++	"npm",
++	"pip",
++	"pip3",
++	"pnpm",
++	"psql",
++	"pytest",
++	"python",
++	"python3",
++	"rsync",
++	"ruby",
++	"scp",
++	"service",
++	"sh",
++	"ssh",
++	"systemctl",
++	"wget",
++	"yarn",
++]);
++
++/** Substrings that mark a command as destructive to previously proven state. */
++const DESTRUCTIVE_PATTERNS = [
++	"rm -rf",
++	"rm -fr",
++	"git reset --hard",
++	"git clean -",
++	"git gc",
++	"update-ref -d",
++	"systemctl stop",
++	"service nginx stop",
++	"service ssh stop",
++	"pkill",
++	"killall",
++	"mkfs",
++	"truncate -s 0",
++	"docker rm",
++	"apt-get remove",
++	"apt-get purge",
++];
++
++/**
++ * Paths whose deletion is routine scratch cleanup rather than a change to the
++ * state a grader observes. Without this the guard fires on every run that tidies
++ * up its own temporary clone directory.
++ */
++const SCRATCH_PREFIXES = ["/tmp/", "/var/tmp/", "./tmp", "~/tmp"];
++
++function isScratchOnlyDestruction(normalized: string, offset: number): boolean {
++	const tail = normalized.slice(offset).split(" ").slice(1);
++	const targets = tail
++		.filter((token) => !token.startsWith("-"))
++		.slice(0, 4)
++		.filter((token) => token.length > 0 && token !== "&&" && token !== ";" && token !== "|");
++	if (targets.length === 0) return false;
++	return targets.every((token) => SCRATCH_PREFIXES.some((prefix) => token.startsWith(prefix)));
++}
++
++const PRODUCING_VERBS = [
++	"write",
++	"writes",
++	"written",
++	"save",
++	"saves",
++	"saved",
++	"create",
++	"creates",
++	"created",
++	"output",
++	"outputs",
++	"produce",
++	"produces",
++	"generate",
++	"generates",
++	"called",
++	"named",
++];
++
++const NEGATION_MARKERS = ["no need", "don't", "do not", "except", "ignore", "dead code", "not required"];
++
++type ObligationKind = "command" | "snippet" | "artifact";
++
++interface AuditObligation {
++	kind: ObligationKind;
++	id: string;
++	/** Human-readable form injected into the notice. */
++	display: string;
++	/** Whitespace/quote-normalized form used for literal matching. */
++	normalized: string;
++	/** Distinctive (non-flag) tokens used for variant matching. */
++	tokens: string[];
++	/** For snippet obligations: root module names that must be importable. */
++	modules?: string[];
++}
++
++interface ExercisePoint {
++	call: number;
++	offset: number;
++	/** 2 = executed literally as quoted, 1 = executed as a recognizable variant. */
++	level: 1 | 2;
++	cwd?: string;
++}
++
++interface TaskContractAuditState {
++	enabled: boolean;
++	/** Repeat guard runs even when the task states no mechanically checkable obligation. */
++	repeatEnabled: boolean;
++	obligations: AuditObligation[];
++	/** Normalized invocation signature -> number of times it was issued. */
++	invocationCounts: Map<string, number>;
++	/** Signature -> display form of the first invocation, for the notice text. */
++	invocationDisplay: Map<string, string>;
++	/** Signatures observed during the turn currently being recorded. */
++	pendingRepeats: string[];
++	repeatNoticesEmitted: number;
++	maxRepeatNotices: number;
++	repeatThreshold: number;
++	exercises: Map<string, ExercisePoint[]>;
++	producedArtifacts: Set<string>;
++	createdDirs: string[];
++	lastDestructive?: { call: number; offset: number; command: string };
++	callIndex: number;
++	turnIndex: number;
++	noticesEmitted: number;
++	reportedSignatures: Set<string>;
++	startedAt: number;
++	maxNotices: number;
++	checkpointTurns: number;
++}
++
++function messageText(message: AgentMessage): string {
++	const content = (message as { content?: unknown }).content;
++	if (typeof content === "string") return content;
++	if (!Array.isArray(content)) return "";
++	return content
++		.filter((part): part is { type: "text"; text: string } =>
++			Boolean(part && typeof part === "object" && (part as { type?: string }).type === "text"),
++		)
++		.map((part) => part.text)
++		.join("\n");
++}
++
++function normalizeCommand(raw: string): string {
++	return raw
++		.replace(/\\\n/g, " ")
++		.replace(/["'`]/g, "")
++		.replace(/\s+/g, " ")
++		.trim();
++}
++
++function commandHead(normalized: string): string {
++	const head = normalized.split(" ")[0] ?? "";
++	return head.toLowerCase();
++}
++
++function isExecutableCommandLine(normalized: string): boolean {
++	if (normalized.length < 4 || normalized.length > 300) return false;
++	const head = commandHead(normalized);
++	if (head.startsWith("./") || head.startsWith("/usr/") || head.startsWith("/bin/") || head.startsWith("/sbin/")) {
++		return true;
++	}
++	if (!EXECUTABLE_HEADS.has(head)) return false;
++	// A bare head with no arguments is not a checkable obligation.
++	return normalized.split(" ").length > 1;
++}
++
++/**
++ * Host-insensitive form of an argument token. A run that reaches the same
++ * endpoint through `localhost` instead of the hostname quoted in the task, or
++ * that clones the same path without the `user@host:` prefix, has still
++ * exercised the obligation; only the endpoint spelling differs.
++ */
++function hostInsensitive(token: string): string {
++	return token
++		.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "")
++		.replace(/^[^@\s]*@[^:\s]*:/, "")
++		.replace(/^[A-Za-z0-9_.-]+:(?=\/)/, "");
++}
++
++function distinctiveTokens(normalized: string): string[] {
++	return normalized
++		.split(" ")
++		.slice(1)
++		.filter((token) => token.length > 1 && !token.startsWith("-"));
++}
++
++function makeCommandObligation(normalized: string): AuditObligation | undefined {
++	if (!isExecutableCommandLine(normalized)) return undefined;
++	return {
++		kind: "command",
++		id: `command:${normalized}`,
++		display: normalized,
++		normalized,
++		tokens: distinctiveTokens(normalized),
++	};
++}
++
++/**
++ * Local window around a mention. Task statements are frequently one long line,
++ * so line-scoped checks both miss the governing verb and pick up unrelated
++ * negations elsewhere in the same paragraph.
++ */
++function windowAround(text: string, index: number, before: number, after: number): string {
++	return text.slice(Math.max(0, index - before), Math.min(text.length, index + after)).toLowerCase();
++}
++
++function extractObligations(taskText: string): AuditObligation[] {
++	const obligations = new Map<string, AuditObligation>();
++	const add = (obligation: AuditObligation | undefined) => {
++		if (obligation && !obligations.has(obligation.id)) obligations.set(obligation.id, obligation);
++	};
++
++	// Fenced blocks: code snippets that must run, or command sequences to execute.
++	const fence = /```([A-Za-z0-9_+-]*)\n([\s\S]*?)```/g;
++	let fenceMatch: RegExpExecArray | null = fence.exec(taskText);
++	while (fenceMatch) {
++		const language = (fenceMatch[1] ?? "").toLowerCase();
++		const body = fenceMatch[2] ?? "";
++		if (language === "python" || language === "py") {
++			const modules = new Set<string>();
++			const importRe = /^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)/gm;
++			let importMatch: RegExpExecArray | null = importRe.exec(body);
++			while (importMatch) {
++				modules.add(importMatch[1]);
++				importMatch = importRe.exec(body);
++			}
++			if (modules.size > 0) {
++				const names = [...modules].sort();
++				add({
++					kind: "snippet",
++					id: `snippet:${names.join(",")}`,
++					display: `the quoted code snippet importing ${names.map((n) => `\`${n}\``).join(", ")}`,
++					normalized: names.join(","),
++					tokens: names,
++					modules: names,
++				});
++			}
++		} else {
++			for (const line of body.split("\n")) {
++				add(makeCommandObligation(normalizeCommand(line)));
++			}
++		}
++		fenceMatch = fence.exec(taskText);
++	}
++
++	// Indented command blocks (four or more leading spaces).
++	for (const line of taskText.split("\n")) {
++		if (!/^\s{4,}\S/.test(line)) continue;
++		add(makeCommandObligation(normalizeCommand(line)));
++	}
++
++	// Inline code spans.
++	const inline = /`([^`\n]{3,200})`/g;
++	let inlineMatch: RegExpExecArray | null = inline.exec(taskText);
++	while (inlineMatch) {
++		add(makeCommandObligation(normalizeCommand(inlineMatch[1])));
++		inlineMatch = inline.exec(taskText);
++	}
++
++	// Named output artifacts governed by a producing verb.
++	const pathRe = /(\/[A-Za-z0-9._\-/]*[A-Za-z0-9_-]\.[A-Za-z0-9]{1,6})/g;
++	let pathMatch: RegExpExecArray | null = pathRe.exec(taskText);
++	while (pathMatch) {
++		const path = pathMatch[1];
++		const lead = windowAround(taskText, pathMatch.index, 70, 0);
++		const scope = windowAround(taskText, pathMatch.index, 70, 40);
++		const hasVerb = PRODUCING_VERBS.some((verb) => lead.includes(verb));
++		const negated = NEGATION_MARKERS.some((marker) => scope.includes(marker));
++		if (hasVerb && !negated) {
++			add({
++				kind: "artifact",
++				id: `artifact:${path}`,
++				display: path,
++				normalized: path,
++				tokens: [path],
++			});
++		}
++		pathMatch = pathRe.exec(taskText);
++	}
++
++	return [...obligations.values()];
++}
++
++function createTaskContractAuditState(
++	messages: AgentMessage[],
++	overrides: TaskContractAuditConfig | undefined,
++): TaskContractAuditState {
++	const enabled = overrides?.enabled ?? AUDIT_DEFAULTS.enabled;
++	const taskText = messages
++		.filter((message) => message.role === "user")
++		.map((message) => messageText(message))
++		.join("\n\n");
++	const obligations = enabled && taskText.length > 0 ? extractObligations(taskText) : [];
++	return {
++		enabled: enabled && obligations.length > 0,
++		repeatEnabled: enabled,
++		obligations,
++		invocationCounts: new Map(),
++		invocationDisplay: new Map(),
++		pendingRepeats: [],
++		repeatNoticesEmitted: 0,
++		maxRepeatNotices: Math.max(0, overrides?.maxRepeatNotices ?? AUDIT_DEFAULTS.maxRepeatNotices),
++		repeatThreshold: Math.max(2, overrides?.repeatThreshold ?? AUDIT_DEFAULTS.repeatThreshold),
++		exercises: new Map(),
++		producedArtifacts: new Set(),
++		createdDirs: [],
++		callIndex: 0,
++		turnIndex: 0,
++		noticesEmitted: 0,
++		reportedSignatures: new Set(),
++		startedAt: Date.now(),
++		maxNotices: Math.max(0, overrides?.maxNotices ?? AUDIT_DEFAULTS.maxNotices),
++		checkpointTurns: Math.max(1, overrides?.checkpointTurns ?? AUDIT_DEFAULTS.checkpointTurns),
++	};
++}
++
++function resolveAgainst(cwd: string | undefined, target: string): string {
++	if (target.startsWith("/")) return target.replace(/\/+$/, "");
++	const base = (cwd ?? "").replace(/\/+$/, "");
++	return `${base}/${target}`.replace(/\/+$/, "");
++}
++
++/** Tokens that end a command segment; anything after them is not an argument. */
++function segmentTokens(normalized: string, from: number): string[] {
++	const tokens: string[] = [];
++	for (const token of normalized.slice(from).split(" ")) {
++		if (token === "" ) continue;
++		if (token === "&&" || token === "||" || token === ";" || token === "|" || token.startsWith("2>") || token.startsWith(">")) {
++			break;
++		}
++		tokens.push(token);
++	}
++	return tokens;
++}
++
++/** git clone flags that consume a following value. */
++const CLONE_VALUE_FLAGS = new Set(["--branch", "-b", "--depth", "--origin", "-o", "--reference", "-c", "--config"]);
++
++function recordCreatedDirs(state: TaskContractAuditState, normalized: string, cwd: string | undefined): void {
++	const cloneAt = normalized.indexOf("git clone");
++	if (cloneAt !== -1) {
++		const tokens = segmentTokens(normalized, cloneAt + "git clone".length);
++		const positional: string[] = [];
++		for (let i = 0; i < tokens.length; i++) {
++			const token = tokens[i];
++			if (token.startsWith("-")) {
++				if (CLONE_VALUE_FLAGS.has(token) && !token.includes("=")) i++;
++				continue;
++			}
++			positional.push(token);
++		}
++		const source = positional[0];
++		const target = positional[1];
++		if (target) {
++			state.createdDirs.push(resolveAgainst(cwd, target));
++		} else if (source) {
++			const base = source.split("/").pop() ?? "";
++			const name = base.replace(/\.git$/, "");
++			if (name) state.createdDirs.push(resolveAgainst(cwd, name));
++		}
++	}
++	const mkdirRe = /mkdir(?:\s+-\S+)*\s+([^\s;|&>]+)/g;
++	let mkdir: RegExpExecArray | null = mkdirRe.exec(normalized);
++	while (mkdir) {
++		state.createdDirs.push(resolveAgainst(cwd, mkdir[1]));
++		mkdir = mkdirRe.exec(normalized);
++	}
++	// An in-place build makes the current directory an importable source tree; a
++	// check run from there proves the tree, not the installed/global state.
++	if (cwd && (normalized.includes("build_ext --inplace") || /pip\d?\s+install\s+-e\b/.test(normalized))) {
++		state.createdDirs.push(cwd);
++	}
++}
++
++function isInsideCreatedDir(state: TaskContractAuditState, cwd: string | undefined): boolean {
++	if (!cwd) return false;
++	return state.createdDirs.some((dir) => dir.length > 1 && (cwd === dir || cwd.startsWith(`${dir}/`)));
++}
++
++function addExercise(state: TaskContractAuditState, obligation: AuditObligation, point: ExercisePoint): void {
++	const points = state.exercises.get(obligation.id);
++	if (points) points.push(point);
++	else state.exercises.set(obligation.id, [point]);
++}
++
++function recordBashCall(state: TaskContractAuditState, rawCommand: string): void {
++	const normalized = normalizeCommand(rawCommand);
++	const lower = normalized.toLowerCase();
++	const cdMatch = /(?:^|&&\s*|;\s*)cd\s+(\S+)/.exec(normalized);
++	const cwd = cdMatch ? cdMatch[1].replace(/\/+$/, "") : undefined;
++
++	recordCreatedDirs(state, normalized, cwd);
++
++	for (const pattern of DESTRUCTIVE_PATTERNS) {
++		const offset = lower.indexOf(pattern);
++		if (offset === -1) continue;
++		if (isScratchOnlyDestruction(lower, offset)) continue;
++		const previous = state.lastDestructive;
++		if (!previous || previous.call < state.callIndex || previous.offset < offset) {
++			state.lastDestructive = { call: state.callIndex, offset, command: pattern };
++		}
++	}
++
++	for (const obligation of state.obligations) {
++		if (obligation.kind === "artifact") {
++			const basename = obligation.normalized.split("/").pop() ?? obligation.normalized;
++			if (normalized.includes(obligation.normalized) || (basename.length > 3 && normalized.includes(basename))) {
++				state.producedArtifacts.add(obligation.id);
++			}
++			continue;
++		}
++		if (obligation.kind === "snippet") {
++			for (const moduleName of obligation.modules ?? []) {
++				const importRe = new RegExp(`\\b(?:import|from)\\s+${moduleName}\\b`);
++				const hit = importRe.exec(normalized);
++				if (hit) {
++					addExercise(state, obligation, { call: state.callIndex, offset: hit.index, level: 2, cwd });
++					break;
++				}
++			}
++			continue;
++		}
++		const literalOffset = normalized.indexOf(obligation.normalized);
++		if (literalOffset !== -1) {
++			addExercise(state, obligation, { call: state.callIndex, offset: literalOffset, level: 2, cwd });
++			continue;
++		}
++		const head = commandHead(obligation.normalized);
++		if (!normalized.includes(head)) continue;
++		const matched = obligation.tokens.filter(
++			(token) => normalized.includes(token) || normalized.includes(hostInsensitive(token)),
++		);
++		if (obligation.tokens.length > 0 && matched.length / obligation.tokens.length >= 0.6) {
++			const probe = matched[0] ?? head;
++			const offset = normalized.includes(probe) ? normalized.indexOf(probe) : normalized.indexOf(head);
++			addExercise(state, obligation, { call: state.callIndex, offset: Math.max(0, offset), level: 1, cwd });
++		}
++	}
++}
++
++/**
++ * Signature used by the repeat guard. Flags, redirections and quoting are
++ * dropped so that a command re-issued with cosmetic edits still collapses onto
++ * the same signature; the first six distinctive tokens are enough to identify
++ * "the same thing again" without collapsing genuinely different work.
++ */
++function invocationSignature(normalized: string): string {
++	return normalized
++		.toLowerCase()
++		.split(" ")
++		.filter((token) => token.length > 0 && !token.startsWith("-") && !token.startsWith(">") && token !== "|")
++		.slice(0, 6)
++		.join(" ");
++}
++
++function recordInvocation(state: TaskContractAuditState, signature: string, display: string): void {
++	if (!state.repeatEnabled || signature.length === 0) return;
++	const count = (state.invocationCounts.get(signature) ?? 0) + 1;
++	state.invocationCounts.set(signature, count);
++	if (!state.invocationDisplay.has(signature)) state.invocationDisplay.set(signature, display);
++	if (count >= state.repeatThreshold) state.pendingRepeats.push(signature);
++}
++
++function recordTurnForAudit(state: TaskContractAuditState, message: AssistantMessage): void {
++	if (!state.enabled && !state.repeatEnabled) return;
++	state.turnIndex += 1;
++	state.pendingRepeats = [];
++	for (const block of message.content) {
++		if (block.type !== "toolCall") continue;
++		state.callIndex += 1;
++		const args = (block.arguments ?? {}) as Record<string, unknown>;
++		const command = typeof args.command === "string" ? args.command : undefined;
++		if (command) {
++			const normalized = normalizeCommand(command);
++			recordInvocation(state, invocationSignature(normalized), normalized.slice(0, 160));
++			if (state.enabled) recordBashCall(state, command);
++			continue;
++		}
++		const path = typeof args.path === "string" ? args.path : undefined;
++		if (!path) continue;
++		const normalizedPath = path.replace(/\/+$/, "");
++		recordInvocation(state, `${block.name}:${normalizedPath}`, `${block.name} ${normalizedPath}`);
++		if (!state.enabled) continue;
++		const pathBase = normalizedPath.split("/").pop() ?? normalizedPath;
++		// A written script that itself names the artifact counts as producing it.
++		const written =
++			typeof args.content === "string"
++				? args.content
++				: Array.isArray(args.edits)
++					? args.edits
++							.map((edit) => (edit as { newText?: unknown }).newText)
++							.filter((text): text is string => typeof text === "string")
++							.join("\n")
++					: "";
++		for (const obligation of state.obligations) {
++			if (obligation.kind !== "artifact") continue;
++			const basename = obligation.normalized.split("/").pop() ?? obligation.normalized;
++			if (
++				normalizedPath === obligation.normalized ||
++				pathBase === basename ||
++				written.includes(obligation.normalized) ||
++				(basename.length > 3 && written.includes(basename))
++			) {
++				state.producedArtifacts.add(obligation.id);
++			}
++		}
++	}
++}
++
++/**
++ * Repeat guard: the same command or the same file rewritten several times means
++ * the run is spending budget without changing external state, and the model has
++ * no other way to see how much wall-clock it has already burned. Report both,
++ * once per signature, bounded per run.
++ */
++function runRepeatGuard(state: TaskContractAuditState, signal: AbortSignal | undefined): AgentMessage[] {
++	if (!state.repeatEnabled || signal?.aborted) return [];
++	if (state.repeatNoticesEmitted >= state.maxRepeatNotices) return [];
++	const fresh = state.pendingRepeats.filter((signature) => !state.reportedSignatures.has(`repeat:${signature}`));
++	state.pendingRepeats = [];
++	if (fresh.length === 0) return [];
++	const signature = fresh[0];
++	state.reportedSignatures.add(`repeat:${signature}`);
++	state.repeatNoticesEmitted += 1;
++
++	const count = state.invocationCounts.get(signature) ?? state.repeatThreshold;
++	const display = state.invocationDisplay.get(signature) ?? signature;
++	const elapsedSeconds = Math.round((Date.now() - state.startedAt) / 1000);
++	const text =
++		`[pi harness] Automatic no-progress check. This is not a message from the user.\n\n` +
++		`You have now issued the same operation ${count} times in this run: \`${display}\`. ` +
++		`Elapsed wall-clock: ${elapsedSeconds}s over ${state.callIndex} tool calls; runs here are cut off by a hard deadline and any work that is not already durable at that moment is lost.\n\n` +
++		`Do not retry the same operation a further time in the same form. Either change the approach materially, or stop iterating and spend the remaining budget making the current state durable and verifiable: persist what already works (scripts, services, installed artifacts, written files) so it survives this session, then run the task's own acceptance check once, literally as the task states it.`;
++
++	return [
++		{
++			role: "user",
++			content: [{ type: "text", text }],
++			timestamp: Date.now(),
++		} satisfies AgentMessage,
++	];
++}
++
++function lastExercisePosition(state: TaskContractAuditState): { call: number; offset: number } | undefined {
++	let best: { call: number; offset: number } | undefined;
++	for (const obligation of state.obligations) {
++		if (obligation.kind === "artifact") continue;
++		for (const point of state.exercises.get(obligation.id) ?? []) {
++			if (!best || point.call > best.call || (point.call === best.call && point.offset > best.offset)) {
++				best = { call: point.call, offset: point.offset };
++			}
++		}
++	}
++	return best;
++}
++
++interface AuditFinding {
++	signature: string;
++	text: string;
++}
++
++function collectAuditFindings(state: TaskContractAuditState, phase: "checkpoint" | "exit"): AuditFinding[] {
++	const findings: AuditFinding[] = [];
++	const commandObligations = state.obligations.filter((o) => o.kind === "command");
++
++	// 1. A verbatim quoted command was never executed as written. Reported only
++	//    at exit: mid-run a contract command legitimately has not run yet.
++	for (const obligation of phase === "exit" ? commandObligations : []) {
++		const points = state.exercises.get(obligation.id) ?? [];
++		// Only report when the obligation was never exercised at all. A run that
++		// executed a recognizable variant has already demonstrated the behavior,
++		// and demanding the literal string there would cost a turn for nothing.
++		if (points.length > 0) continue;
++		findings.push({
++			signature: `never-run:${obligation.id}`,
++			text: `The task quotes this command: \`${obligation.display}\`. Nothing in this run has executed it or any recognizable form of it. Whatever grades this run will execute the quoted form against the final state, so run it exactly as written and observe the result before finishing.`,
++		});
++	}
++
++	// 2. Every quoted command ran at least once, then the environment was
++	//    destructively changed and nothing has been re-verified since.
++	const everyCommandRan =
++		commandObligations.length > 0 &&
++		commandObligations.every((obligation) => (state.exercises.get(obligation.id) ?? []).length > 0);
++	const destructive = state.lastDestructive;
++	const lastExercise = lastExercisePosition(state);
++	if (
++		everyCommandRan &&
++		destructive &&
++		lastExercise &&
++		(destructive.call > lastExercise.call ||
++			(destructive.call === lastExercise.call && destructive.offset > lastExercise.offset))
++	) {
++		findings.push({
++			signature: `stale-after-destructive:${destructive.call}:${destructive.offset}`,
++			text: `The task's quoted commands all succeeded earlier in this run, but afterwards the environment was changed destructively (\`${destructive.command}\`) and none of them has been re-run since. The grader only sees the final state. Re-run the quoted sequence end to end against the current state, fix whatever it now reveals (ownership, permissions, deleted refs, removed hooks), and only then finish.`,
++		});
++	}
++
++	// 3. A quoted snippet was only ever exercised from inside a directory this run created.
++	for (const obligation of state.obligations) {
++		if (obligation.kind !== "snippet") continue;
++		const points = state.exercises.get(obligation.id) ?? [];
++		if (points.length === 0) continue;
++		if (!points.every((point) => isInsideCreatedDir(state, point.cwd))) continue;
++		const dirs = [...new Set(points.map((point) => point.cwd).filter(Boolean))].join(", ");
++		findings.push({
++			signature: `snippet-local-only:${obligation.id}`,
++			text: `So far ${obligation.display} has only ever been executed with a working directory inside ${dirs}, which this run created. Inside that tree the modules resolve from the source directory itself, so this proves nothing about the global environment a grader uses. Re-run the snippet from an unrelated working directory (for example \`cd /tmp\`) in a fresh interpreter; if it fails there, install the package into the environment and re-check.`,
++		});
++	}
++
++	// 4. Exit only: a file the task names as an output was never created or referenced.
++	if (phase === "exit") {
++		for (const obligation of state.obligations) {
++			if (obligation.kind !== "artifact") continue;
++			if (state.producedArtifacts.has(obligation.id)) continue;
++			findings.push({
++				signature: `artifact-missing:${obligation.id}`,
++				text: `The task names \`${obligation.display}\` as an output, but no tool call in this run has created or referenced it. Produce it and verify its contents before finishing.`,
++			});
++		}
++	}
++
++	return findings;
++}
++
++function runTaskContractAudit(
++	state: TaskContractAuditState,
++	phase: "checkpoint" | "exit",
++	signal: AbortSignal | undefined,
++): AgentMessage[] {
++	if (!state.enabled || signal?.aborted) return [];
++	if (state.noticesEmitted >= state.maxNotices) return [];
++	if (phase === "checkpoint" && (state.turnIndex === 0 || state.turnIndex % state.checkpointTurns !== 0)) {
++		return [];
++	}
++
++	const fresh = collectAuditFindings(state, phase).filter(
++		(finding) => !state.reportedSignatures.has(finding.signature),
++	);
++	if (fresh.length === 0) return [];
++	for (const finding of fresh) state.reportedSignatures.add(finding.signature);
++	state.noticesEmitted += 1;
++
++	const elapsedSeconds = Math.round((Date.now() - state.startedAt) / 1000);
++	const header =
++		phase === "exit"
++			? `[pi harness] Automatic task-contract check before this run ends (${elapsedSeconds}s elapsed, ${state.callIndex} tool calls). This is not a message from the user.`
++			: `[pi harness] Automatic task-contract checkpoint (${elapsedSeconds}s elapsed, ${state.callIndex} tool calls). This is not a message from the user.`;
++	const body = fresh.map((finding, index) => `${index + 1}. ${finding.text}`).join("\n");
++	const footer =
++		"Act on each item that is still true. If an item is already satisfied by work you have done, say so in one line and continue; do not restart unrelated work.";
++
++	return [
++		{
++			role: "user",
++			content: [{ type: "text", text: `${header}\n\n${body}\n\n${footer}` }],
++			timestamp: Date.now(),
++		} satisfies AgentMessage,
++	];
++}
++
+ /**
+  * Start an agent loop with a new prompt message.
+  * The prompt is added to the context and events are emitted for it.
+@@ -163,6 +876,7 @@ async function runLoop(
+ 	let currentContext = initialContext;
+ 	let config = initialConfig;
+ 	let firstTurn = true;
++	const auditState = createTaskContractAuditState(currentContext.messages, config.taskContractAudit);
+ 	// Check for steering messages at start (user may have typed while waiting)
+ 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
+ 
+@@ -192,6 +906,7 @@ async function runLoop(
+ 			// Stream assistant response
+ 			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
+ 			newMessages.push(message);
++			recordTurnForAudit(auditState, message);
+ 
+ 			if (message.stopReason === "error" || message.stopReason === "aborted") {
+ 				await emit({ type: "turn_end", message, toolResults: [] });
+@@ -257,6 +972,16 @@ async function runLoop(
+ 			}
+ 
+ 			pendingMessages = (await config.getSteeringMessages?.()) || [];
++			if (pendingMessages.length === 0 && hasMoreToolCalls) {
++				// No-progress guard first: repeating the same operation is the more
++				// urgent signal because it burns the deadline without changing state.
++				pendingMessages = runRepeatGuard(auditState, signal);
++			}
++			if (pendingMessages.length === 0 && hasMoreToolCalls) {
++				// Mid-run checkpoint: surface obligations that are already provably
++				// unmet while there is still budget to act on them.
++				pendingMessages = runTaskContractAudit(auditState, "checkpoint", signal);
++			}
+ 		}
+ 
+ 		// Agent would stop here. Check for follow-up messages.
+@@ -267,6 +992,14 @@ async function runLoop(
+ 			continue;
+ 		}
+ 
++		// The model believes it is done. The grader judges the final environment
++		// state against the task's literal obligations, so check those first.
++		const auditMessages = runTaskContractAudit(auditState, "exit", signal);
++		if (auditMessages.length > 0) {
++			pendingMessages = auditMessages;
++			continue;
++		}
++
+ 		// No more messages, exit
+ 		break;
+ 	}
+diff --git a/packages/agent/src/agent.ts b/packages/agent/src/agent.ts
+index 147edc8..57da1be 100644
+--- a/packages/agent/src/agent.ts
++++ b/packages/agent/src/agent.ts
+@@ -24,6 +24,7 @@ import type {
+ 	PrepareNextTurnContext,
+ 	QueueMode,
+ 	StreamFn,
++	TaskContractAuditConfig,
+ 	ToolExecutionMode,
+ } from "./types.ts";
+ 
+@@ -118,6 +119,11 @@ export interface AgentOptions {
+ 	transport?: Transport;
+ 	maxRetryDelayMs?: number;
+ 	toolExecution?: ToolExecutionMode;
++	/**
++	 * Overrides for the loop's deterministic task-contract audit and no-progress guard.
++	 * Enabled by default; pass `{ enabled: false }` to disable.
++	 */
++	taskContractAudit?: TaskContractAuditConfig;
+ }
+ 
+ class PendingMessageQueue {
+@@ -206,6 +212,8 @@ export class Agent {
+ 	public maxRetryDelayMs?: number;
+ 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
+ 	public toolExecution: ToolExecutionMode;
++	/** Overrides for the loop's task-contract audit and no-progress guard. */
++	public taskContractAudit?: TaskContractAuditConfig;
+ 
+ 	constructor(options: AgentOptions) {
+ 		// Older compiled consumers may omit options or streamFn even though the current API requires them.
+@@ -228,6 +236,7 @@ export class Agent {
+ 		this.transport = runtimeOptions.transport ?? "auto";
+ 		this.maxRetryDelayMs = runtimeOptions.maxRetryDelayMs;
+ 		this.toolExecution = runtimeOptions.toolExecution ?? "parallel";
++		this.taskContractAudit = runtimeOptions.taskContractAudit;
+ 	}
+ 
+ 	/**
+@@ -443,6 +452,7 @@ export class Agent {
+ 			thinkingBudgets: this.thinkingBudgets,
+ 			maxRetryDelayMs: this.maxRetryDelayMs,
+ 			toolExecution: this.toolExecution,
++			taskContractAudit: this.taskContractAudit,
+ 			beforeToolCall: this.beforeToolCall,
+ 			afterToolCall: this.afterToolCall,
+ 			prepareNextTurn:
+diff --git a/packages/agent/src/types.ts b/packages/agent/src/types.ts
+index 52f3489..d084ce1 100644
+--- a/packages/agent/src/types.ts
++++ b/packages/agent/src/types.ts
+@@ -141,9 +141,41 @@ export interface AgentLoopTurnUpdate {
+ 
+ export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
+ 
++/**
++ * Configuration for the loop's deterministic task-contract audit and repeat guard.
++ *
++ * The audit derives externally checkable obligations from the task text (verbatim
++ * commands, quoted code-snippet imports, named output artifacts), tracks how the
++ * run actually exercised them, and injects a short machine-generated notice when
++ * the run is about to end, or is mid-run, with an obligation that was never
++ * executed, was invalidated by a later destructive change, or was only ever
++ * checked from inside a directory this run created.
++ *
++ * The repeat guard injects a notice when the same shell command is issued several
++ * times with near-identical arguments, reporting elapsed run time.
++ */
++export interface TaskContractAuditConfig {
++	/** Master switch. Default: true. */
++	enabled?: boolean;
++	/** Maximum number of contract notices injected per run. Default: 3. */
++	maxNotices?: number;
++	/** Maximum number of repeat-guard notices injected per run. Default: 2. */
++	maxRepeatNotices?: number;
++	/** Turn interval between mid-run contract checkpoints. Default: 8. */
++	checkpointTurns?: number;
++	/** Number of near-identical shell invocations that triggers a repeat notice. Default: 3. */
++	repeatThreshold?: number;
++}
++
+ export interface AgentLoopConfig extends SimpleStreamOptions {
+ 	model: Model<any>;
+ 
++	/**
++	 * Optional overrides for the loop's deterministic task-contract audit and repeat guard.
++	 * Enabled by default; set `{ enabled: false }` to turn the mechanism off entirely.
++	 */
++	taskContractAudit?: TaskContractAuditConfig;
++
+ 	/**
+ 	 * Converts AgentMessage[] to LLM-compatible Message[] before each LLM call.
+ 	 *

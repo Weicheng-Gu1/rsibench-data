@@ -1,0 +1,272 @@
+{
+  "schema_version": 2,
+  "purpose": "Falsifiable cross-round memory without controller-defined semantic mechanism classes. The Meta-agent owns causal interpretation.",
+  "attempts": [
+    {
+      "candidate_id": "round-01",
+      "status": "rejected",
+      "reason": "meta_submission_failed",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": true,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-01-agent-loop-completion-audit",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [
+          "PI_SRC_HARNESS_RUNTIME"
+        ],
+        "files": [
+          "packages/agent/src/agent-loop.ts",
+          "packages/agent/src/agent.ts",
+          "packages/agent/src/types.ts",
+          "packages/agent/test/agent-loop.test.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=terminal-bench-qemu-alpine-ssh; failure_repeat=1; action=action_41/42 ran the self-test as `ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost` instead of the contract's literal `ssh -p 2222 root@localhost`, suppressing the first-client failure modes the task requires to work; the literal command was first attempted at T=876s of 900s and its result was never observed; verifier=no verifier summary, `harbor agent failure: AgentTimeoutError: Agent execution timed out after 900.0 seconds`, reward 0.0 (timeout alone is not decisive: passing repeat_02 also timed out yet scored 1/1); pass_repeat=0 ran the exact contract string with no suppressing options, which is how it found and fixed the host-key prompt (ssh-keyscan -T 60 for localhost/<REDACTED_PRIVATE_IPV4>/::1) and the IPv6->IPv4 hostfwd gap before the deadline",
+          "task=terminal-bench-configure-git-webserver; failure_repeat=1; action=action_28 ran the full clone->commit->push->`curl <REDACTED_PRIVATE_ENDPOINT> proof and then, in the same shell block, mutated the proven-good state (`rm -rf /git/server/refs/heads/* /var/www/git/*`, `git --git-dir=/git/server update-ref -d refs/heads/master`, `gc -q --prune=now`) and never re-ran the end-to-end check before declaring completion at action_30; verifier=1 test, 0 passed: `[remote rejected] master -> master (failed to update ref)` then `TEST FAILED: Web server returned HTTP 404`; pass_repeat=2 recreated the post-receive hook its cleanup had removed and re-ran the complete clone->push->curl 'hello world' sequence against the post-cleanup state before finishing",
+          "task=terminal-bench-build-cython-ext; failure_repeat=0; action=action_12 treated the in-place `python3 setup.py build_ext --inplace` plus in-tree import (`cd /app/pyknotid && python3 -c 'from pyknotid.spacecurves import chelpers...'`) as the deliverable and spent all remaining actions on source auditing, never installing into the global environment and never running the quoted README snippet from a neutral working directory; verifier=3/11 passed, `AssertionError: pyknotid is not installed` (importlib.util.find_spec('pyknotid') is None) then `ModuleNotFoundError: No module named 'pyknotid'` for the chelpers/ccomplexity/cinvariants tests, which execute from /tests outside the source tree; pass_repeat=1 ran `pip install .` right after the first successful compile and verified from /tmp and tests/, so the same 900s cutoff truncated only optional polishing"
+        ],
+        "root_cause": "The agent loop treats the model's own decision to stop as the sole termination condition. In runLoop, once an assistant turn produces no tool calls and both the steering and follow-up queues are empty, agent_end is emitted immediately. Nothing in the runtime compares the final environment state against the concrete, externally checkable obligations stated in the task text, so a run can end on evidence that is stale (a proof invalidated by a later destructive change), scoped too narrowly (a check run only from inside the source tree the run itself created), or weakened (a self-test that adds flags suppressing the very interactive behavior the task requires). The external verifier grades the final state, so each divergence converts directly into zero reward, and in every contrasted pair the passing repeat differed by performing exactly the check the failing repeat skipped.",
+        "mechanism": "packages/agent/src/agent-loop.ts builds a CompletionAuditState from the task's user messages at the start of runLoop and updates it after every turn from the actual tool calls (recordTurnForAudit). It deterministically extracts three classes of obligation: verbatim commands quoted in the task (fenced blocks, inline code spans, indented blocks, filtered by an executable command head), import lines of quoted code snippets that must run, and named artifact paths, with paths required only when a producing verb governs the mention and dropped when the mention is negated ('except', 'no need', 'ignore'). Per action it records which obligations were exercised, the working directory via a leading `cd`, the directories the run created or built inside (git clone targets, mkdir, in-place build/install cwds), the last mutating action and, separately, the last destructive action (rm/mv/chmod/kill/git reset|clean|gc|update-ref|checkout/systemctl stop|restart/...), so ordinary forward progress such as compiling or installing never triggers a pointless re-run demand. Where the loop would exit, runCompletionAudit reports findings when a quoted command was never executed as written, when a command or snippet last succeeded before a later destructive change, when a quoted snippet only ever ran from inside a directory this run created (proving the local build tree rather than the installed/global state a grader observes), or when a required artifact was never produced or was rewritten and never re-validated. Any finding causes a machine-generated checklist to be injected as a pending message and the loop continues instead of ending. Bounded and safe: at most maxAudits injections per run (default 2), suppressed on repeated finding signature, skipped when the abort signal is set, silent when the task states no mechanically checkable obligation, and disableable via completionAudit.enabled. AgentLoopConfig.completionAudit is threaded through Agent (packages/agent/src/agent.ts, packages/agent/src/types.ts).",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "PI_SRC_AGENT_LOOP owns turn progression and stopping, and its guidance names this exact situation: 'the agent stops before acting or continues after a terminal state'. The defect is that the loop's exit condition consults only queue emptiness and the model's stop reason, so the fix must live where that decision is made; the existing follow-up/steering injection path is reused, so no new event types or session plumbing are needed. Prose guidance is the wrong instrument here: the failing repeats did not lack the concept of verification, they ended believing they had verified. A coding-session or observation-layer edit cannot intercept the termination decision itself, and provider/context modules are downstream of a correct context that simply stopped too early.",
+        "predicted_fixes": [
+          "terminal-bench-qemu-alpine-ssh: when the run is about to end without having executed the contract's literal `ssh -p 2222 root@localhost`, the audit names that exact string and refuses the exit, surfacing the host-key prompt and IPv6 hostfwd hazards while budget remains instead of leaving them to an unobserved attempt 24s before the deadline; replay of the failing repeat's action sequence fires the audit, replay of the passing repeat does not.",
+          "terminal-bench-configure-git-webserver: after the clone/push/curl proof is invalidated by `rm -rf /git/server/refs/heads/*` plus `update-ref -d` and `gc --prune=now`, the audit reports that the environment was destructively changed after those task commands last succeeded and requires the end-to-end sequence to be re-run on the final state, turning the `[remote rejected]`/HTTP 404 regression into an in-run failure the repeat had ample budget to repair.",
+          "terminal-bench-build-cython-ext: when the quoted README snippet has only ever run with a working directory inside the cloned /app/pyknotid build tree, the audit demands it be re-run from an unrelated directory such as /tmp, which fails loudly for an in-place-only build and drives the `pip install .` step that separates the passing repeat, instead of ending with `pyknotid is not installed`."
+        ],
+        "regression_risks": [
+          "False positives on tasks whose quoted commands are illustrative rather than required could cost extra turns; mitigated by the executable command-head filter, the negation filter, the producing-verb requirement for artifacts, the maxAudits budget (default 2) and signature deduplication.",
+          "The extra turn consumes wall-clock and tokens near a deadline; mitigated by skipping the audit when the abort signal is already set and by capping injections, though a run already destined to time out may now end on the audit turn.",
+          "Command matching is substring-based on normalized tool arguments, so an agent satisfying an obligation via an equivalent but textually different command still sees a finding; the injected message asks for the literal string, which is what the cited graders check, and the audit never blocks stopping after the agent responds.",
+          "Embedders relying on agent_end firing at the first idle point may observe one extra user message and turn; opt-out via completionAudit.enabled=false, and the injected message is explicitly labelled as harness-generated so it is not mistaken for user input.",
+          "Heuristic build-tree detection (git clone targets, mkdir, in-place build cwds) could misclassify a working directory and suppress or raise a snippet finding; impact is bounded to one extra checklist item."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke",
+          "packages/agent/test/agent-loop.test.ts -t \"completion audit\" — six new cases: blocks stopping when a verbatim task command was never executed; allows stopping when it was; blocks stopping when the environment was destructively changed after the last check; does not fire when the task states no mechanically checkable obligation; stops injecting after the configured audit budget; can be disabled entirely.",
+          "Replay over the contrasted training tasks: audit fires on the failing repeat of qemu-alpine-ssh, configure-git-webserver and build-cython-ext, and stays silent on their passing repeats and on a generic refactor prompt."
+        ],
+        "analysis_tags": [
+          "agent_loop",
+          "stopping_criterion",
+          "completion_verification",
+          "deterministic_runtime_mechanism",
+          "within_task_contrast",
+          "cross_task_pattern",
+          "stale_verification",
+          "verbatim_contract_command",
+          "build_tree_vs_installed_state"
+        ]
+      },
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": []
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "<REDACTED_USER_HOME>/rsibench/runs/formal-resume-terminal-claude-opus-5-meta-claude-opus-5-pi-source12-g5-tr3-te3-20260817T045239Z/pi-source-evolution/controller/records/round-01"
+    },
+    {
+      "candidate_id": "round-02",
+      "status": "accepted",
+      "reason": "targeted_training_improved",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-02-loop-contract-audit-and-no-progress-guard",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [
+          "PI_SRC_HARNESS_RUNTIME"
+        ],
+        "files": [
+          "packages/agent/src/agent-loop.ts",
+          "packages/agent/src/agent.ts",
+          "packages/agent/src/types.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=terminal-bench-configure-git-webserver; failure_repeat=1; action=action_28 ran the full clone/commit/push/curl proof and then, in the same root shell block, destroyed the proven state (rm -rf /git/server/refs/heads/* /var/www/git/*, git --git-dir=/git/server update-ref -d refs/heads/master, git --git-dir=/git/server gc -q --prune=now) and never re-ran the push path, while action_29 only inspected ls /var/www/git, ss -tlnp and curl <REDACTED_PRIVATE_ENDPOINT> which returned 200 for an empty index and cannot detect a broken push - the passing repeat performed the equivalent teardown but then re-created the hook, re-applied chown -R user:user /git /var/www/git and re-ran the entire clone/commit/push/curl flow as user in actions 29-31 before finishing; verifier=1 test 0 passed - [remote rejected] master -> master (failed to update ref), error: failed to push some refs to localhost:/git/server, then TEST FAILED: Web server returned HTTP 404, reward 0.0; pass_repeat=0",
+          "task=terminal-bench-build-cython-ext; failure_repeat=0; action=action_12 ran cd /app/pyknotid and python3 setup.py build_ext --inplace, then treated in-tree imports executed with cwd=/app/pyknotid (actions 13, 15, 16, 19) as satisfying the task clause install pyknotid from source to system's global python environment - pip install . was never run in the 43 remaining actions and the quoted README snippet was never executed from a neutral directory, whereas the passing repeat also built in place but ran pip install . at action_32 and from action_33 verified with cd /tmp, printing chelpers.__file__ from site-packages and re-installing after every later edit; verifier=11 tests 3 passed 8 failed - AssertionError: pyknotid is not installed from importlib.util.find_spec('pyknotid') is None, then ModuleNotFoundError: No module named 'pyknotid' for the chelpers, ccomplexity and cinvariants tests which run from /tests outside the source tree, reward 0.0; pass_repeat=1",
+          "task=terminal-bench-qemu-alpine-ssh; failure_repeat=1; action=action_33 wrote the fourth successive rewrite of the same expect serial driver /tmp/vmrun.exp (already rewritten at actions 23, 26 and 30) to fight prompt-regex matching, so actions 23-34 changed no guest state at all and the run reached the 900 s deadline still inside an open verification loop with QEMU running only as an inline nohup child from action_19 rather than from a restartable script, whereas the passing repeat wrote its console driver once (/tmp/con.py at action_21, worked on first use and never rewritten), had sshd installed, enabled and started by action_32, and spent the remaining budget on durability (/app/start-vm.sh at actions 18-19, /app/port-relay.py at actions 41-44); verifier=no verifier record at all - summary null, empty failure list, empty stdout, with mechanism evidence 3da69bab50d4797a categorising the run as context_or_agent_runtime with AgentTimeoutError: Agent execution timed out after 900.0 seconds, reward 0.0; pass_repeat=2",
+          "/app/pi-source-evidence/references/3b71155ad0062a0b-index.json",
+          "/app/pi-source-evidence/references/43ef5b65935b041a-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/69329390182f7e7b-evolution-history.json",
+          "/app/pi-source-evidence/references/195fecea359ead28-trajectory.jsonl",
+          "/app/pi-source-evidence/references/56e910e08ec0fef9-trajectory.jsonl",
+          "/app/pi-source-evidence/references/0a79ebb88ac59c36-trajectory.jsonl",
+          "/app/pi-source-evidence/references/7cf7fe6d9f751acc-trajectory.jsonl",
+          "/app/pi-source-evidence/references/a03875501dd75439-trajectory.jsonl",
+          "/app/pi-source-evidence/references/c7ba622b8461be9c-trajectory.jsonl",
+          "/app/pi-source-evidence/references/a1e5bcf71f36751c-trajectory.jsonl"
+        ],
+        "root_cause": "OBJECTIVE A - unverified-contract termination. runLoop's exit condition consults only queue emptiness and the model's stop reason. Nothing in the runtime compares the final environment state against the concrete obligations the task text states, so a run legitimately believes it has verified when its evidence is (i) stale, invalidated by a destructive change made after the last successful acceptance run or after the deliverable was last produced (configure-git-webserver repeat 1, action_28 wiped /var/www/git/* and the master ref after the only successful push/curl proof), or (ii) scoped to a tree the run itself created, so the check passes only because the source directory is sys.path[0] (build-cython-ext repeat 0, action_12 onward with cwd=/app/pyknotid). In both cases the recorded passing repeat differs by exactly one thing: it re-executed the deliverable check in the post-mutation or neutral context (git-webserver repeat 0 re-created the hook, restored ownership and re-ran the whole clone/push/curl flow after its teardown; cython repeat 1 ran pip install . and then verified from /tmp). The failing repeats did not lack the concept of verification; they ended believing they had verified, which is why advisory prose cannot fix it and why the intervention must sit at the moment the loop decides to stop. OBJECTIVE B - invisible repetition against an invisible deadline. Nothing in the runtime reports that the same operation has just been issued for the third time, or how much wall-clock the run has consumed. In qemu-alpine-ssh repeat 1 the same expect driver was rewritten four times and the same expect invocation issued three times; the model had no signal distinguishing 'this approach is not converging' from 'one more try', so it burned roughly 400 s of a 900 s budget on identical retries and reached the deadline with the VM still an ad-hoc nohup child and the literal ssh -p 2222 root@localhost never executed. The decisive contrast is that recorded passing repeats 0 and 2 also hit the same AgentTimeoutError and still scored 1/1: the deadline was survivable; reaching it with nothing durable was not.",
+        "mechanism": "Both objectives live in packages/agent/src/agent-loop.ts as deterministic state derived from the run itself; packages/agent/src/types.ts adds TaskContractAuditConfig to AgentLoopConfig and packages/agent/src/agent.ts threads it through Agent and createLoopConfig, which the coding agent constructs in sdk.ts - that is the default-path consumer of the new option, so the RSIBench path picks up the defaults with no call-site change. OBJECTIVE A: at the top of runLoop, createTaskContractAuditState parses the task's user messages into externally checkable obligations - verbatim commands (fenced blocks, indented blocks, inline code spans, admitted only when the command head is a real executable and the line carries arguments), root module names imported by quoted python snippets, and file paths the task names as outputs (required only when a producing verb governs the mention within a 70-character lead window and no negation marker appears nearby). recordTurnForAudit updates that state after every assistant turn from the actual tool calls: which obligations were exercised and at what fidelity (literal versus recognizable variant, with host-insensitive argument matching so localhost for a quoted hostname still counts), the working directory implied by a leading cd, the directories this run created (git clone targets with flag-value skipping, mkdir targets, and the cwd of an in-place build_ext --inplace or pip install -e), the position at which each named artifact was last produced or referenced (by bash command text, by write/edit path, or by an artifact path appearing inside written file content), and the last destructive action - restricted to genuinely state-destroying patterns (rm -rf, git reset --hard, git clean -, git gc, update-ref -d, systemctl or service stop, pkill, apt-get purge) and suppressed when every target is scratch space under /tmp. collectAuditFindings reports only provable gaps: (1) a quoted command never exercised in any form; (2) every quoted command having succeeded earlier but a destructive action occurring strictly after the last such exercise with no re-verification since; (3) a quoted snippet exercised exclusively from inside a directory this run created; (4) at exit, a named output artifact never created or referenced; and (5) at exit, an artifact that was produced but only before a later destructive action that nothing has touched since - the grader reads the final filesystem, not the moment the file first appeared. Findings become one short machine-generated user message labelled '[pi harness]' carrying elapsed seconds and tool-call count, injected through the existing pendingMessages path so the loop continues instead of emitting agent_end; it runs at the exit point and as a mid-run checkpoint every eight turns. OBJECTIVE B: recordInvocation hashes each tool call to a flag-and-redirection-free signature (first six distinctive tokens for bash, tool plus path for write and edit). When a signature reaches three occurrences, runRepeatGuard injects a notice naming the repeated operation, its count, the elapsed wall-clock and total tool calls, and instructs the run either to change approach materially or to stop iterating and spend the remaining budget making the current state durable and running the task's own acceptance check once, literally. It fires before the contract checkpoint because non-convergence is the more urgent signal. Both mechanisms are bounded (three contract notices, two repeat notices per run), deduplicated by finding signature, skipped when the abort signal is set, silent when the task states nothing mechanically checkable, and switchable off via taskContractAudit.enabled.",
+        "evidence_basis": "multiple_independent_objectives",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "PI_SRC_AGENT_LOOP owns turn progression and stopping; its own guidance names this situation ('the agent stops before acting or continues after a terminal state'). Objective A must intercept the decision to stop, which exists only in runLoop - a coding-session, observation or context edit is downstream of a context that was already correct and simply ended too early, and provider runtime is downstream of that again. Objective B must see the whole run's tool-call history and inject before the next provider request; the loop is the only place holding both. The two objectives share one physical module because both are turn-progression decisions, but they remain separately grounded and separately falsifiable: A is evidenced by configure-git-webserver and build-cython-ext, B by qemu-alpine-ssh alone, and B makes no claim about A's tasks. I compared this with the observation layer - the failing runs' observations were accurate, since the git-webserver curl really did return 200 for an empty index and the cython in-tree import really did succeed, so nothing was lost in presentation - and with tool runtime, where every tool executed exactly as asked. The defect is in what the runtime does with a correct observation at the moment it decides the run is over. Shared prompt, rules and skills are outside this condition's catalog and would in any case be the wrong instrument: the failing repeats already knew to verify.",
+        "predicted_fixes": [
+          "terminal-bench-configure-git-webserver (objective A): after action_28's root-owned rm -rf /var/www/git/* plus update-ref -d plus gc --prune=now, two findings now apply - the quoted clone/commit/push/curl sequence last succeeded before a destructive change, and the named deliverable under the web root was last produced before that same destructive change and never touched since. The run is asked to re-run the sequence end to end against the final state. In-run the push then fails in the agent's own shell, exposing the root-owned refs, and the single chown -R user:user /git/server that repeat 0 performed restores it, turning 'failed to update ref' and HTTP 404 into TEST PASSED. Replay of the failing repeat fires the stale finding; successful repeats 0 and 2 produce no exit finding because both re-ran the flow after their teardown. The failing run had spare actions and no timeout, so the extra turns are affordable.",
+          "terminal-bench-build-cython-ext (objective A): once the quoted README snippet has only ever been imported with a working directory inside the cloned /app/pyknotid tree, the checkpoint demands it be re-run from an unrelated directory. Replay fires this on failing repeats 0 and 2 and is silent at exit on successful repeat 1, which ran pip install . and verified from /tmp. In-run the neutral-directory check fails with ModuleNotFoundError at roughly 20% of the budget and points at the one missing command; repeat 1 shows the fix costs a single action and flips 8 of 11 verifier tests.",
+          "terminal-bench-qemu-alpine-ssh (objective B): the third identical expect invocation and the third rewrite of /tmp/vmrun.exp each trigger a no-progress notice carrying elapsed wall-clock. Replay of failing repeat 1 fires two such notices at exactly actions 23-33, where the run burned about 400 s without changing guest state. Redirecting that budget to what both successful repeats did - a restartable boot script, confirmed process survival, and one clean run of the literal ssh -p 2222 root@localhost - is the whole difference between this run's null verifier record and the 1/1 repeats 0 and 2 obtained under the same 900 s timeout."
+        ],
+        "regression_risks": [
+          "An injected notice costs one extra turn and its tokens. Mitigated by hard caps (three contract notices, two repeat notices per run), per-signature deduplication, and skipping when the abort signal is already set - but a run already destined to time out may now end on the notice turn. Replay across all 45 archived trajectories showed at most two notices on any single run.",
+          "The new stale-artifact finding could fire on a run that legitimately deleted and re-created the artifact through a path the matcher does not recognize (for example an indirect deploy hook), costing one turn. Mitigated because the finding requires the destructive action to be strictly after the last recorded production or reference of that artifact, and any later mention of the path or its basename in a command or written file clears it - verified directly: produced then destroyed then re-produced yields zero notices.",
+          "False-positive contract findings on tasks whose quoted commands are illustrative rather than required would waste a turn. Mitigated by the executable-command-head filter, the requirement that a command carry arguments, negation markers, the producing-verb requirement for artifacts, and by reporting a command obligation only when it was never exercised in any recognizable form.",
+          "Destructive-action detection is substring-based and could misclassify. It was narrowed after replay (bare rm -f, chown -R, git checkout -f and systemctl restart removed) and given a scratch-path exemption for /tmp, which removed the false stale-verification finding on successful git-webserver repeats 0 and 2. A residual risk is a run that mutates real state and re-verifies through an unrecognized command; the injected message asks it to re-run and it may answer in one line and continue.",
+          "The repeat guard may fire on a legitimately iterative workflow such as a recompile-and-test loop. The notice explicitly permits continuing after a material change of approach and never blocks any tool call; the cap is two per run.",
+          "Embedders relying on agent_end firing at the first idle point now see one extra user message and turn. The message is explicitly labelled harness-generated so it is not mistaken for user input, and taskContractAudit.enabled=false restores the previous behavior exactly."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke",
+          "agent-harness",
+          "Direct audit unit exercise (already run, and the check that falsifies the new increment): drive the audit with an artifact produced, then destroyed, then never touched - it must emit the stale-artifact finding at exit; with the artifact re-produced after the destructive step it must emit nothing; with no destructive step it must emit nothing. All three observed.",
+          "Trajectory replay (already run, and the check that falsifies the objectives): feed each archived training trajectory's assistant turns through recordTurnForAudit and assert the asymmetry - findings on terminal-bench-configure-git-webserver repeat 1, terminal-bench-build-cython-ext repeats 0 and 2, and two repeat-guard notices on terminal-bench-qemu-alpine-ssh repeat 1, with no exit finding on git-webserver repeats 0 and 2, cython repeat 1, qemu repeats 0 and 2, raman repeats 0 and 1, and model-extraction repeat 2. If the mechanism does not fire on the cited failures, or fires at exit on the paired successes, the causal claim is falsified.",
+          "Targeted train pass@3 on terminal-bench-configure-git-webserver and terminal-bench-build-cython-ext versus the cached accepted baseline (objective A), inspecting candidate rollouts for the injected '[pi harness] Automatic task-contract check' message and for a subsequent re-run of the push/curl flow or a neutral-directory import.",
+          "Targeted train pass@3 on terminal-bench-qemu-alpine-ssh versus baseline (objective B), inspecting candidate rollouts for the '[pi harness] Automatic no-progress check' message at the third identical expect invocation and for a subsequent shift to durability work rather than a fourth driver rewrite."
+        ],
+        "analysis_tags": [
+          "agent_loop",
+          "stopping_criterion",
+          "deliverable_grounded_verification",
+          "stale_verification_after_mutation",
+          "stale_artifact_detection",
+          "build_tree_vs_installed_state",
+          "no_progress_detection",
+          "deadline_awareness",
+          "durability_before_deadline",
+          "deterministic_runtime_mechanism",
+          "within_task_contrast",
+          "multiple_independent_objectives",
+          "trajectory_replay_validated"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.6666666666666666,
+        "candidate_score": 1.0,
+        "delta": 0.33333333333333337,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-configure-git-webserver",
+          "terminal-bench-qemu-alpine-ssh"
+        ],
+        "regressed_tasks": []
+      },
+      "performance_attempts": [
+        {
+          "performance_attempt": 1,
+          "passed": true,
+          "reason": "targeted_training_improved",
+          "source_commit": "54d8fe2b7b6faff2ff1d5bf4bcfd1c0af6028a8b",
+          "target_task_ids": [
+            "terminal-bench-configure-git-webserver",
+            "terminal-bench-build-cython-ext",
+            "terminal-bench-qemu-alpine-ssh"
+          ],
+          "evidence_ref": "<REDACTED_USER_HOME>/rsibench/runs/formal-resume-terminal-claude-opus-5-meta-claude-opus-5-pi-source12-g5-tr3-te3-20260817T045239Z/pi-source-evolution/archive/round-02/candidates/round-02/attempt-01/target-validation/result.json",
+          "attribution": {
+            "baseline_score": 0.6666666666666666,
+            "candidate_score": 1.0,
+            "delta": 0.33333333333333337,
+            "fail_to_pass": [],
+            "pass_to_fail": [],
+            "improved_tasks": [
+              "terminal-bench-build-cython-ext",
+              "terminal-bench-configure-git-webserver",
+              "terminal-bench-qemu-alpine-ssh"
+            ],
+            "regressed_tasks": []
+          },
+          "post_validation_review": {
+            "schema_version": 1,
+            "decision": "accept",
+            "implementation_judgment": "loaded_and_triggered",
+            "behavior_judgment": "matched_prediction",
+            "score_judgment": "causal_improvement",
+            "failure_disposition": "none",
+            "runtime_trigger_evidence": [
+              {
+                "task_id": "terminal-bench-configure-git-webserver",
+                "repeat_index": 1,
+                "mechanism_evidence_key": "pi_source_runtime.source_commit=54d8fe2b7b6faff2ff1d5bf4bcfd1c0af6028a8b (verified=true; candidate trajectory /app/pi-source-evidence/references/5bca66163100f0f5-trajectory.jsonl)",
+                "rationale": "Objective A fired verbatim at the declared failure point. The candidate rollout contains an injected user message '[pi harness] Automatic task-contract checkpoint (176s elapsed, 27 tool calls). This is not a message from the user.' carrying finding 2: 'The task's quoted commands all succeeded earlier in this run, but afterwards the environment was changed destructively (`rm -rf`) and none of them has been re-run since. The grader only sees the final state.' The next assistant turn is 'I destroyed the repo when resetting it - the hook and ownership are gone. Restoring and re-validating now.', followed by ls of /git/server showing root:root ownership - exactly the root-owned-refs condition that produced '[remote rejected] master -> master (failed to update ref)' in baseline repeat 1. The run then set /etc/gitconfig identity, rebuilt the bare repo and post-receive hook, chown -R user:user /git /var/www/html, removed the pre-seeded placeholder so the file had to come from a real push, and executed the literal quoted sequence (git clone user@server:/git/server, echo hello world > hello.html, git add, git commit -m 'add hello.html', git push origin master, curl <REDACTED_PRIVATE_ENDPOINT> which returned 'remote: Deployed master to /var/www/html', '* [new branch] master -> master' and 'hello world'. Reward 1.0 versus baseline 0.0 on the same repeat index."
+              },
+              {
+                "task_id": "terminal-bench-build-cython-ext",
+                "repeat_index": 0,
+                "mechanism_evidence_key": "pi_source_runtime.source_commit=54d8fe2b7b6faff2ff1d5bf4bcfd1c0af6028a8b (verified=true; candidate trajectory /app/pi-source-evidence/references/96641afde0300834-trajectory.jsonl)",
+                "rationale": "Objective B fired at 444s over 50 tool calls with '[pi harness] Automatic no-progress check', naming the repeated pyknotid probe and instructing the run to stop iterating, make state durable and run the task's own acceptance check once, literally. The immediately following assistant turn is 'Everything works. Final combined verification (tests + literal acceptance snippet)', which runs the snippet with cd /tmp against the installed package; the output shows resolution to /usr/local/lib/python3.13/site-packages/pyknotid/... .so files plus '18 passed'. That is precisely the neutral-directory / globally-installed check whose absence caused the baseline repeat-0 verifier failure ('AssertionError: pyknotid is not installed', ModuleNotFoundError from /tests). Verifier: 11/11 tests passed, reward 1.0 versus baseline 0.0."
+              },
+              {
+                "task_id": "terminal-bench-build-cython-ext",
+                "repeat_index": 1,
+                "mechanism_evidence_key": "pi_source_runtime.source_commit=54d8fe2b7b6faff2ff1d5bf4bcfd1c0af6028a8b (verified=true; candidate trajectory /app/pi-source-evidence/references/54b0c1e81cdef115-trajectory.jsonl)",
+                "rationale": "Second independent Objective B trigger on the same task at 276s over 28 tool calls: the repeated operation reported is 'cd /tmp && PYTHONPATH=/app/pyknotid python3 -c import pyknotid ...', i.e. a check that only appears to prove global installation because PYTHONPATH points back at the run-created source tree - the exact build-tree-versus-installed-state confusion the manifest predicted. The run passes with reward 1.0."
+              }
+            ],
+            "rationale": "1) Loading: every archived candidate rollout records pi_source_runtime.source_commit=54d8fe2b7b6faff2ff1d5bf4bcfd1c0af6028a8b with verified=true and bundle_manifest_sha256=891c5fb1bc20a0e78b631116fa4366e3e1a6136a4ed12d5d542e64b512d22763, distinct from accepted_commit c544a309, and load_errors is empty everywhere; the extension set and module hashes are identical to baseline, so the only changed variable is the agent-loop source. 2) Behavior at the declared failure points: both objectives are directly observable as injected '[pi harness]' user messages in the candidate trajectories, and in each case the very next assistant turn does what the manifest predicted. Objective A's stale-after-destructive finding fired on configure-git-webserver repeat 1 and produced an explicit admission plus a full re-run of the literal quoted sequence against the final state, converting the baseline's 'failed to update ref' / HTTP 404 into a passing end-to-end proof. Objective B's no-progress guard fired twice on build-cython-ext (repeats 0 and 1) and in repeat 0 immediately redirected the run to the literal acceptance snippet executed from /tmp against site-packages, which is the exact check the baseline failures never performed. I found no trajectory contradiction: no run answered a notice by looping, and the notices are correctly labelled as harness-generated so they were not mistaken for user instructions. 3) Score: configure-git-webserver 0.667 -> 1.000, build-cython-ext 0.333 -> 1.000, qemu-alpine-ssh 0.667 -> 1.000, with the all-pass anchor headless-terminal unchanged at 1.000 and zero guard violations. Four of the nine target rollouts flipped from 0 to 1. The build-cython-ext lift (1/3 -> 3/3) is the least attributable to sampling alone because the mechanism is visible in the transcripts of the rollouts that flipped and its message content maps one-to-one onto the failure mode ('verify from a neutral directory against the installed package'). The configure-git-webserver flip is the strongest single causal chain: notice -> admission -> restoration -> literal re-run -> pass. The qemu-alpine-ssh flip is the weakest: candidate repeat 1 passed by writing its console helper once (vmsh/run.py, never rewritten), verifying the literal ssh -p 2222 root@localhost path including a negative wrong-password control, and only then persisting /app/start-alpine-vm.sh - i.e. it behaved exactly like the baseline passing repeats without ever needing a repeat-guard notice. So that one target is consistent with the hypothesis but not independently proven by a trigger, and with 3/3 versus 2/3 it is within pass@3 variation on its own. Overall, the gate passed, loading is proven, and two of three targets carry matching behavioral evidence, so the aggregate lift is causal rather than noise.",
+            "next_direction": "Keep the cumulative agent-loop diff and treat both objectives as validated, but note the residual asymmetry: Objective A is proven by a trigger-plus-response chain, Objective B is proven on build-cython-ext and only circumstantially on qemu-alpine-ssh. For the next round, pursue a distinct, separately grounded objective on the remaining partial-pass tasks that this candidate never targeted: terminal-bench-raman-fitting (pass 0,1 / fail 2) and terminal-bench-model-extraction-relu-logits (pass 2 / fail 0,1). Replay already showed that the artifact-obligation finding fires at exit on the raman failing repeat (the task names /app/results.json and no tool call produced it), so the concrete next step is to read those two raw failing trajectories against their passing siblings and determine whether the gap is (a) the deliverable never being written at all, which the existing exit finding should already cover and therefore needs measurement rather than new code, or (b) a numeric/tolerance acceptance criterion the run never re-checked, which would require a genuinely different mechanism - for example carrying the task's stated numeric acceptance threshold into the exit check rather than only file existence. Also worth measuring, without changing the mechanism: whether the repeat-guard threshold of three is optimal, since one build-cython-ext rollout received the notice only at 444s, late enough that an earlier trigger might have saved budget. Do not re-litigate the accepted objectives; extend coverage to a new evidence-backed failure family.",
+            "reflection_ref": "<REDACTED_USER_HOME>/rsibench/runs/formal-resume-terminal-claude-opus-5-meta-claude-opus-5-pi-source12-g5-tr3-te3-20260817T045239Z/pi-source-evolution/archive/round-02/candidates/round-02/attempt-01/post-review/reflection.json"
+          },
+          "reflection": {
+            "schema_version": 1,
+            "decision": "accept",
+            "implementation_judgment": "loaded_and_triggered",
+            "behavior_judgment": "matched_prediction",
+            "score_judgment": "causal_improvement",
+            "failure_disposition": "none",
+            "runtime_trigger_evidence": [
+              {
+                "task_id": "terminal-bench-configure-git-webserver",
+                "repeat_index": 1,
+                "mechanism_evidence_key": "pi_source_runtime.source_commit=54d8fe2b7b6faff2ff1d5bf4bcfd1c0af6028a8b (verified=true; candidate trajectory /app/pi-source-evidence/references/5bca66163100f0f5-trajectory.jsonl)",
+                "rationale": "Objective A fired verbatim at the declared failure point. The candidate rollout contains an injected user message '[pi harness] Automatic task-contract checkpoint (176s elapsed, 27 tool calls). This is not a message from the user.' carrying finding 2: 'The task's quoted commands all succeeded earlier in this run, but afterwards the environment was changed destructively (`rm -rf`) and none of them has been re-run since. The grader only sees the final state.' The next assistant turn is 'I destroyed the repo when resetting it - the hook and ownership are gone. Restoring and re-validating now.', followed by ls of /git/server showing root:root ownership - exactly the root-owned-refs condition that produced '[remote rejected] master -> master (failed to update ref)' in baseline repeat 1. The run then set /etc/gitconfig identity, rebuilt the bare repo and post-receive hook, chown -R user:user /git /var/www/html, removed the pre-seeded placeholder so the file had to come from a real push, and executed the literal quoted sequence (git clone user@server:/git/server, echo hello world > hello.html, git add, git commit -m 'add hello.html', git push origin master, curl <REDACTED_PRIVATE_ENDPOINT> which returned 'remote: Deployed master to /var/www/html', '* [new branch] master -> master' and 'hello world'. Reward 1.0 versus baseline 0.0 on the same repeat index."
+              },
+              {
+                "task_id": "terminal-bench-build-cython-ext",
+                "repeat_index": 0,
+                "mechanism_evidence_key": "pi_source_runtime.source_commit=54d8fe2b7b6faff2ff1d5bf4bcfd1c0af6028a8b (verified=true; candidate trajectory /app/pi-source-evidence/references/96641afde0300834-trajectory.jsonl)",
+                "rationale": "Objective B fired at 444s over 50 tool calls with '[pi harness] Automatic no-progress check', naming the repeated pyknotid probe and instructing the run to stop iterating, make state durable and run the task's own acceptance check once, literally. The immediately following assistant turn is 'Everything works. Final combined verification (tests + literal acceptance snippet)', which runs the snippet with cd /tmp against the installed package; the output shows resolution to /usr/local/lib/python3.13/site-packages/pyknotid/... .so files plus '18 passed'. That is precisely the neutral-directory / globally-installed check whose absence caused the baseline repeat-0 verifier failure ('AssertionError: pyknotid is not installed', ModuleNotFoundError from /tests). Verifier: 11/11 tests passed, reward 1.0 versus baseline 0.0."
+              },
+              {
+                "task_id": "terminal-bench-build-cython-ext",
+                "repeat_index": 1,
+                "mechanism_evidence_key": "pi_source_runtime.source_commit=54d8fe2b7b6faff2ff1d5bf4bcfd1c0af6028a8b (verified=true; candidate trajectory /app/pi-source-evidence/references/54b0c1e81cdef115-trajectory.jsonl)",
+                "rationale": "Second independent Objective B trigger on the same task at 276s over 28 tool calls: the repeated operation reported is 'cd /tmp && PYTHONPATH=/app/pyknotid python3 -c import pyknotid ...', i.e. a check that only appears to prove global installation because PYTHONPATH points back at the run-created source tree - the exact build-tree-versus-installed-state confusion the manifest predicted. The run passes with reward 1.0."
+              }
+            ],
+            "rationale": "1) Loading: every archived candidate rollout records pi_source_runtime.source_commit=54d8fe2b7b6faff2ff1d5bf4bcfd1c0af6028a8b with verified=true and bundle_manifest_sha256=891c5fb1bc20a0e78b631116fa4366e3e1a6136a4ed12d5d542e64b512d22763, distinct from accepted_commit c544a309, and load_errors is empty everywhere; the extension set and module hashes are identical to baseline, so the only changed variable is the agent-loop source. 2) Behavior at the declared failure points: both objectives are directly observable as injected '[pi harness]' user messages in the candidate trajectories, and in each case the very next assistant turn does what the manifest predicted. Objective A's stale-after-destructive finding fired on configure-git-webserver repeat 1 and produced an explicit admission plus a full re-run of the literal quoted sequence against the final state, converting the baseline's 'failed to update ref' / HTTP 404 into a passing end-to-end proof. Objective B's no-progress guard fired twice on build-cython-ext (repeats 0 and 1) and in repeat 0 immediately redirected the run to the literal acceptance snippet executed from /tmp against site-packages, which is the exact check the baseline failures never performed. I found no trajectory contradiction: no run answered a notice by looping, and the notices are correctly labelled as harness-generated so they were not mistaken for user instructions. 3) Score: configure-git-webserver 0.667 -> 1.000, build-cython-ext 0.333 -> 1.000, qemu-alpine-ssh 0.667 -> 1.000, with the all-pass anchor headless-terminal unchanged at 1.000 and zero guard violations. Four of the nine target rollouts flipped from 0 to 1. The build-cython-ext lift (1/3 -> 3/3) is the least attributable to sampling alone because the mechanism is visible in the transcripts of the rollouts that flipped and its message content maps one-to-one onto the failure mode ('verify from a neutral directory against the installed package'). The configure-git-webserver flip is the strongest single causal chain: notice -> admission -> restoration -> literal re-run -> pass. The qemu-alpine-ssh flip is the weakest: candidate repeat 1 passed by writing its console helper once (vmsh/run.py, never rewritten), verifying the literal ssh -p 2222 root@localhost path including a negative wrong-password control, and only then persisting /app/start-alpine-vm.sh - i.e. it behaved exactly like the baseline passing repeats without ever needing a repeat-guard notice. So that one target is consistent with the hypothesis but not independently proven by a trigger, and with 3/3 versus 2/3 it is within pass@3 variation on its own. Overall, the gate passed, loading is proven, and two of three targets carry matching behavioral evidence, so the aggregate lift is causal rather than noise.",
+            "next_direction": "Keep the cumulative agent-loop diff and treat both objectives as validated, but note the residual asymmetry: Objective A is proven by a trigger-plus-response chain, Objective B is proven on build-cython-ext and only circumstantially on qemu-alpine-ssh. For the next round, pursue a distinct, separately grounded objective on the remaining partial-pass tasks that this candidate never targeted: terminal-bench-raman-fitting (pass 0,1 / fail 2) and terminal-bench-model-extraction-relu-logits (pass 2 / fail 0,1). Replay already showed that the artifact-obligation finding fires at exit on the raman failing repeat (the task names /app/results.json and no tool call produced it), so the concrete next step is to read those two raw failing trajectories against their passing siblings and determine whether the gap is (a) the deliverable never being written at all, which the existing exit finding should already cover and therefore needs measurement rather than new code, or (b) a numeric/tolerance acceptance criterion the run never re-checked, which would require a genuinely different mechanism - for example carrying the task's stated numeric acceptance threshold into the exit check rather than only file existence. Also worth measuring, without changing the mechanism: whether the repeat-guard threshold of three is optimal, since one build-cython-ext rollout received the notice only at 444s, late enough that an earlier trigger might have saved budget. Do not re-litigate the accepted objectives; extend coverage to a new evidence-backed failure family."
+          }
+        }
+      ],
+      "performance_feedback": null,
+      "controller_record": "<REDACTED_USER_HOME>/rsibench/runs/formal-resume-terminal-claude-opus-5-meta-claude-opus-5-pi-source12-g5-tr3-te3-20260817T045239Z/pi-source-evolution/controller/records/round-02"
+    }
+  ],
+  "active_attempts_since_last_accept": [],
+  "prompt_policy": {
+    "performance_attempts": 0,
+    "performance_rejections": 0,
+    "blocked_after_no_lift": false,
+    "rejected_change_ids": [],
+    "required_action": "prompt_remains_eligible_with_causal_evidence"
+  }
+}

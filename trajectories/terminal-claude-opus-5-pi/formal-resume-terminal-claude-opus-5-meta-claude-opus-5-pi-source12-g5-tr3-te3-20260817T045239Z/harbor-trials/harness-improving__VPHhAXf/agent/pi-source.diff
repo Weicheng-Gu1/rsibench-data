@@ -1,0 +1,42 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index fca307f..f39a3f3 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -761,6 +761,14 @@ interface AuditFinding {
+  */
+ const ARTIFACT_CHECKPOINT_MIN_CALLS = 12;
+ 
++/**
++ * Tool calls a run may make after last writing a declared output before it is
++ * reminded to write its current best values back. Set above the gap seen in runs
++ * that write and then legitimately verify, and at or below the gap seen in runs
++ * that abandoned a result they had already judged unconverged.
++ */
++const ARTIFACT_STALE_CALLS = 8;
++
+ function collectAuditFindings(state: TaskContractAuditState, phase: "checkpoint" | "exit"): AuditFinding[] {
+ 	const findings: AuditFinding[] = [];
+ 	const commandObligations = state.obligations.filter((o) => o.kind === "command");
+@@ -887,6 +895,22 @@ function collectAuditFindings(state: TaskContractAuditState, phase: "checkpoint"
+ 			});
+ 			continue;
+ 		}
++		// 4b. The artifact exists, but the run has gone on exploring for a long
++		//     stretch without rewriting it. Analysis performed after the last write
++		//     lives only in context, and context is discarded when an external
++		//     deadline kills the run: the grader reads the file as it was last
++		//     written. A run that has since decided its own committed values are not
++		//     converged is therefore holding a result it has already disowned.
++		if (phase !== "exit") {
++			const producedAt = state.artifactProducedAt.get(obligation.id);
++			const sinceWrite = producedAt ? state.callIndex - producedAt.call : 0;
++			if (producedAt && sinceWrite >= ARTIFACT_STALE_CALLS) {
++				findings.push({
++					signature: `artifact-stale-exploration:${obligation.id}:${producedAt.call}`,
++					text: `\`${obligation.display}\` was last written ${sinceWrite} tool calls ago, and everything you have learned since then exists only in this conversation. This run is cut off at a hard wall-clock deadline and graded solely on the file as it stands on disk at that instant, so any refinement you have computed but not written back scores nothing. If your current best estimate now differs from what is in that file, or if you have judged the written values unconverged, rewrite \`${obligation.display}\` with your current best values now, before continuing to investigate.`,
++				});
++			}
++		}
+ 		if (phase === "exit") {
+ 			// 5. Exit only: the artifact was produced, but a later destructive action
+ 			//    can have removed it and nothing has touched it since. The grader reads

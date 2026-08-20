@@ -1,0 +1,154 @@
+diff --git a/packages/coding-agent/src/core/tools/bash.ts b/packages/coding-agent/src/core/tools/bash.ts
+index 1c245cb..9aebd4a 100644
+--- a/packages/coding-agent/src/core/tools/bash.ts
++++ b/packages/coding-agent/src/core/tools/bash.ts
+@@ -24,6 +24,118 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult
+ const MAX_TIMEOUT_MS = 2_147_483_647;
+ const MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000;
+ 
++/**
++ * Run-budget aware execution limits.
++ *
++ * Runs in an automated harness are terminated at a hard external wall-clock
++ * deadline, and any work that is not already durable on disk at that instant is
++ * lost. A single blocking command can therefore consume the entire remaining
++ * budget and leave the run with nothing persisted. These limits bound how much
++ * of the run budget one command may absorb, and make the remaining budget a
++ * model-visible fact rather than an invisible one.
++ */
++const DEFAULT_RUN_BUDGET_MS = 900_000;
++/** Wall clock deliberately kept in reserve so a killed command still leaves time to persist work. */
++const RUN_BUDGET_RESERVE_MS = 120_000;
++/** No single command may absorb more than this fraction of the total run budget. */
++const MAX_SINGLE_COMMAND_BUDGET_SHARE = 0.5;
++/**
++ * Cap applied when the caller supplied no timeout at all. Set above the longest
++ * legitimate single command observed on healthy runs (toolchain installs of
++ * roughly six minutes) so ordinary setup work is never interrupted.
++ */
++const DEFAULT_UNBOUNDED_TIMEOUT_MS = 480_000;
++
++function resolveRunBudgetMs(): number {
++	const raw = process.env.PI_RUN_BUDGET_MS;
++	if (raw) {
++		const parsed = Number(raw);
++		if (Number.isFinite(parsed) && parsed > 0) return parsed;
++	}
++	return DEFAULT_RUN_BUDGET_MS;
++}
++
++/**
++ * Wall-clock reference for the current process, used to estimate how much of the
++ * run budget is still available. Set on the first bash execution.
++ */
++let runStartedAt: number | undefined;
++
++export function _resetBashRunClockForTest(): void {
++	runStartedAt = undefined;
++}
++
++export interface EffectiveBashTimeout {
++	/** Timeout in seconds actually handed to the executor, if any. */
++	timeoutSeconds: number | undefined;
++	/** True when the caller's request (or absence of one) was reduced. */
++	clamped: boolean;
++	/** Requested timeout in seconds, if the caller supplied one. */
++	requestedSeconds: number | undefined;
++	elapsedMs: number;
++	remainingMs: number;
++	budgetMs: number;
++}
++
++/**
++ * Bound a single command's timeout by what is left of the run budget.
++ *
++ * A command is never allowed to run past the point where the run could still
++ * persist and verify its deliverable, and an unbounded command is given a
++ * finite default so a wedged process cannot silently consume the run.
++ */
++export function resolveEffectiveTimeout(timeout: number | undefined, now: number = Date.now()): EffectiveBashTimeout {
++	if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) {
++		throw new Error("Invalid timeout: must be a finite number of seconds");
++	}
++	if (timeout !== undefined && timeout * 1000 > MAX_TIMEOUT_MS) {
++		throw new Error(`Invalid timeout: maximum is ${MAX_TIMEOUT_SECONDS} seconds`);
++	}
++	runStartedAt ??= now;
++	const budgetMs = resolveRunBudgetMs();
++	const elapsedMs = Math.max(0, now - runStartedAt);
++	const remainingMs = Math.max(0, budgetMs - elapsedMs);
++
++	const requestedMs = timeout === undefined ? DEFAULT_UNBOUNDED_TIMEOUT_MS : timeout * 1000;
++	// Leave enough wall clock after the command to persist and verify work.
++	const budgetLimitMs = Math.max(0, remainingMs - RUN_BUDGET_RESERVE_MS);
++	const shareLimitMs = budgetMs * MAX_SINGLE_COMMAND_BUDGET_SHARE;
++	// Never clamp below a floor: a very late command still gets a usable slice.
++	const allowedMs = Math.max(30_000, Math.min(budgetLimitMs, shareLimitMs));
++	const effectiveMs = Math.min(requestedMs, allowedMs);
++
++	return {
++		timeoutSeconds: effectiveMs / 1000,
++		clamped: effectiveMs < requestedMs,
++		requestedSeconds: timeout,
++		elapsedMs,
++		remainingMs,
++		budgetMs,
++	};
++}
++
++/** Human-readable budget note appended to a timed-out command's observation. */
++export function formatBudgetNotice(info: EffectiveBashTimeout): string {
++	// Account for the time this command itself just consumed before being stopped.
++	const spentMs = info.elapsedMs + (info.timeoutSeconds ?? 0) * 1000;
++	const elapsed = Math.round(spentMs / 1000);
++	const remaining = Math.max(0, Math.round((info.budgetMs - spentMs) / 1000));
++	const requested =
++		info.requestedSeconds === undefined
++			? "no timeout was requested, so a default cap applied"
++			: `the requested timeout was ${info.requestedSeconds}s`;
++	return (
++		`This command was stopped by a run-budget limit (${requested}). ` +
++		`About ${elapsed}s of this run's wall-clock budget has been used and roughly ${remaining}s remains; ` +
++		`the run is cut off at a hard deadline and anything not already written to disk at that moment is lost. ` +
++		`Do not simply re-run this command unchanged with a larger timeout. ` +
++		`Either make it cheaper (smaller input, fewer iterations, a faster method), ` +
++		`run it in the background and poll it while doing other work, ` +
++		`or stop this line of work and spend the remaining budget writing and verifying the deliverable the task asks for ` +
++		`using the best result you already have.`
++	);
++}
++
+ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
+ 	if (timeout === undefined) return undefined;
+ 	if (!Number.isFinite(timeout) || timeout <= 0) {
+@@ -423,13 +535,17 @@ export function createBashToolDefinition(
+ 
+ 			const appendStatus = (text: string, status: string) => `${text ? `${text}\n\n` : ""}${status}`;
+ 
++			// Bound this command by what is left of the run's wall-clock budget so a
++			// single blocking call cannot consume the time needed to persist work.
++			const budgetInfo = resolveEffectiveTimeout(timeout);
++
+ 			try {
+ 				let exitCode: number | null;
+ 				try {
+ 					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
+ 						onData: handleData,
+ 						signal,
+-						timeout,
++						timeout: budgetInfo.timeoutSeconds,
+ 						env: spawnContext.env,
+ 					});
+ 					exitCode = result.exitCode;
+@@ -441,7 +557,10 @@ export function createBashToolDefinition(
+ 					}
+ 					if (err instanceof Error && err.message.startsWith("timeout:")) {
+ 						const timeoutSecs = err.message.split(":")[1];
+-						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`));
++						const status = budgetInfo.clamped
++							? `Command timed out after ${timeoutSecs} seconds.\n\n${formatBudgetNotice(budgetInfo)}`
++							: `Command timed out after ${timeoutSecs} seconds`;
++						throw new Error(appendStatus(text, status));
+ 					}
+ 					throw err;
+ 				}
