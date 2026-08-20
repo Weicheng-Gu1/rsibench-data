@@ -1,0 +1,45 @@
+diff --git a/packages/coding-agent/src/core/tools/bash.ts b/packages/coding-agent/src/core/tools/bash.ts
+index f1b9f4b..a006d39 100644
+--- a/packages/coding-agent/src/core/tools/bash.ts
++++ b/packages/coding-agent/src/core/tools/bash.ts
+@@ -337,6 +337,7 @@ export function createBashToolDefinition(
+ 			onUpdate?,
+ 			ctx?,
+ 		) {
++			const startedAt = Date.now();
+ 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
+ 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx);
+ 			const output = new OutputAccumulator({ tempFilePrefix: "pi-bash" });
+@@ -421,7 +422,15 @@ export function createBashToolDefinition(
+ 				return { text, details };
+ 			};
+ 
+-			const appendStatus = (text: string, status: string) => `${text ? `${text}\n\n` : ""}${status}`;
++			const formatElapsedStatus = () => `Command ran for ${formatDuration(Date.now() - startedAt)}`;
++
++			const appendStatus = (text: string, status: string) => `${text ? `${text}\n\n` : ""}${status}\n${formatElapsedStatus()}`;
++
++			const appendSlowCommandStatus = (text: string) => {
++				const elapsedMs = Date.now() - startedAt;
++				if (elapsedMs < 30_000) return text;
++				return `${text ? `${text}\n\n` : ""}${formatElapsedStatus()}`;
++			};
+ 
+ 			try {
+ 				let exitCode: number | null;
+@@ -448,13 +457,14 @@ export function createBashToolDefinition(
+ 
+ 				const snapshot = await finishOutput();
+ 				const { text: outputText, details } = formatOutput(snapshot);
++				const outputTextWithTiming = appendSlowCommandStatus(outputText);
+ 				if (exitCode === null) {
+ 					throw new Error(appendStatus(outputText, "Command terminated before reporting an exit code"));
+ 				}
+ 				if (exitCode !== 0) {
+ 					throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
+ 				}
+-				return { content: [{ type: "text", text: outputText }], details };
++				return { content: [{ type: "text", text: outputTextWithTiming }], details };
+ 			} finally {
+ 				clearUpdateTimer();
+ 			}

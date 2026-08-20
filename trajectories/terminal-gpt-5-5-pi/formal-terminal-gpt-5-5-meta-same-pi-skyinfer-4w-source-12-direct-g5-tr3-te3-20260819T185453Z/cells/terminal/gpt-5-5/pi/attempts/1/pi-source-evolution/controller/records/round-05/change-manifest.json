@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "change_id": "default-preserve-validated-working-state-guideline",
+  "layer": "agent_core_source",
+  "primary_module": "PI_SRC_PROMPT_LOADER",
+  "compound_modules": [],
+  "files": [
+    "packages/coding-agent/src/core/system-prompt.ts"
+  ],
+  "requires_rebuild": true,
+  "failure_evidence": [
+    "/app/pi-source-evidence/references/2662866111eba4a1-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/bcb886de8acc7a39-evolution-history.json",
+    "/app/pi-source-evidence/references/cfec23f4fbc61749-terminal-bench-configure-git-webserver.md",
+    "/app/pi-source-evidence/references/a87a62425d0bf4a5-trajectory.jsonl",
+    "/app/pi-source-evidence/references/706b41b82e47b639-trajectory.jsonl",
+    "task=terminal-bench-configure-git-webserver; failure_repeat=2; action=action_09 bash reset repository and removed /var/www/git-server/hello.html after successful local push/curl validation; verifier=HTTP 404 for /hello.html; pass_repeat=0"
+  ],
+  "root_cause": "The default Pi task prompt did not encode a durable rule to preserve a validated working state after an end-to-end success. In configure-git-webserver repeat 2, the assistant correctly configured the repo, hook, web root, and web server, then action_08 verified that curl <REDACTED_PRIVATE_ENDPOINT> returned hello world. It then action_09 deliberately deleted refs/heads/master and removed /var/www/git-server/hello.html to make a hypothetical first push clean, leaving the externally verified requested behavior broken. Passing repeat 0 also validated the push-to-web flow but did not reset the published artifact afterward.",
+  "mechanism": "buildSystemPrompt now directly adds a concise always-on default guideline before caller-provided prompt guidelines: after successfully validating requested end-to-end behavior, preserve that working state and do not reset, delete, stop services, or remove artifacts unless explicitly asked. At the cited moment, the model would have a model-visible policy against the destructive cleanup action after validation, making it more likely to leave the successful git/webserver state intact before finalizing.",
+  "evidence_basis": "within_task_contrast",
+  "prior_attempt_disposition": "new_direction",
+  "why_this_component": "The causal defect is a missing default task policy rather than tool execution or provider serialization. packages/coding-agent/src/core/system-prompt.ts constructs the default Pi task-agent system prompt used by standard RSIBench coding sessions, so placing the guideline in its default guideline assembly reaches the model before it chooses post-validation cleanup actions.",
+  "predicted_fixes": [
+    "terminal-bench-configure-git-webserver repeat 2 should avoid deleting the validated pushed branch and served hello.html after curl succeeds, preventing the final HTTP 404 verifier failure.",
+    "Other service/configuration tasks that require a live daemon, generated output file, or deployed artifact at final verification should be less likely to regress after successful self-test due to cleanup/reset commands.",
+    "Should preserve the accepted bash null-exit behavior while adding only a model-visible task-state preservation habit."
+  ],
+  "regression_risks": [
+    "The guideline could discourage useful cleanup of temporary files in tasks where cleanup is explicitly part of the requested final state, though it allows cleanup when the user asks for it.",
+    "The added prompt text increases the default system prompt by one short bullet and may slightly affect sampling on unrelated tasks."
+  ],
+  "targeted_checks": [
+    "Read /app/pi-source-evidence/response.schema.json and matched the response contract.",
+    "Verified the worktree contains a real source diff in packages/coding-agent/src/core/system-prompt.ts with the preservation guideline in the default guideline assembly.",
+    "Ran git diff --check in /app/pi-source-candidate successfully.",
+    "Task-level falsification: rerun terminal-bench-configure-git-webserver repeat 2 and check whether after a successful local push/curl validation the agent avoids a reset/delete cleanup step and the final verifier no longer gets HTTP 404 for /hello.html."
+  ],
+  "analysis_tags": [
+    "PI_SRC_PROMPT_LOADER",
+    "system-prompt",
+    "task-state-preservation",
+    "post-validation-cleanup",
+    "terminal-bench-configure-git-webserver",
+    "within-task-contrast"
+  ]
+}
