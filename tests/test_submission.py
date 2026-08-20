@@ -421,7 +421,7 @@ class SubmissionProtocolTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_pr_validator_rejects_terminal_endpoints_without_ablation(self) -> None:
+    def test_pr_validator_accepts_terminal_endpoints_without_ablation(self) -> None:
         base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
         manifest = add_manifest(self.repo)
         value = json.loads(manifest.read_text())
@@ -436,8 +436,7 @@ class SubmissionProtocolTest(unittest.TestCase):
              "--repo-root", str(self.repo), "--base", base, "--head", head],
             text=True, capture_output=True,
         )
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("Terminal requires test_state_policy=all-accepted", completed.stdout + completed.stderr)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_pr_validator_accepts_explicit_legacy_terminal_endpoints(self) -> None:
         base = git(self.repo, "rev-parse", "HEAD").stdout.strip()

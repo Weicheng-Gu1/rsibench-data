@@ -105,14 +105,6 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
             raise ValueError(
                 f"{path}: test_state_policy must be endpoints or all-accepted"
             )
-        if (
-            bench == "terminal"
-            and protocol.get("test_state_policy") != "all-accepted"
-            and not legacy_endpoints
-        ):
-            raise ValueError(
-                f"{path}: formal Terminal requires test_state_policy=all-accepted"
-            )
 
     artifacts = manifest["artifacts"]
     if not isinstance(artifacts, list) or not artifacts:
@@ -186,12 +178,6 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
             )
 
         ablations = manifest.get("ablations")
-        if (
-            bench == "terminal"
-            and not isinstance(ablations, dict)
-            and not legacy_endpoints
-        ):
-            raise ValueError(f"{path}: formal Terminal requires keep-one ablations")
         if ablations is not None:
             if not isinstance(ablations, dict) or ablations.get("method") != (
                 "keep_one_changed_module"

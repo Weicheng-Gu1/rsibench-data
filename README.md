@@ -81,9 +81,8 @@ Only completed, paper-valid runs without unresolved infrastructure errors are
 accepted by default. Credentials, transient PID files, and local absolute paths
 are rejected before commit.
 
-Module ablations belong to the same immutable run, not separate leaderboard
-runs. They are required for `terminal` and not required for the other domains;
-when produced, they apply only to `terminal`
+Module ablations are optional supplemental evidence. When produced, they apply
+only to `terminal`
 using changed-module keep-one
 semantics: each evaluated variant is `A0` plus exactly one module's accepted
 `A*` bytes. Claude Code and Codex may contain changed `SHARED_*` variants; Pi
@@ -95,11 +94,11 @@ complete scores, token/cost accounting, and raw task-agent trajectories.
 Component scores are absolute `Only(Mi)` scores; new records do not calculate
 `Only(Mi)-A0` or `A*-Only(Mi)`.
 
-Current formal submissions require A0 and A_last held-out scores at avg@3.
-Terminal additionally requires every accepted generation and changed-module
-keep-one layers at avg@3; those enrichments are optional for other domains.
-Pull-request validation rejects missing endpoint scores or malformed optional
-results.
+Current formal submissions require only A0 and A_last held-out scores at avg@3.
+Every accepted generation and changed-module keep-one layer may be submitted
+later as a new immutable supplemental submission. Pull-request validation
+rejects missing endpoint scores and strictly validates any optional results that
+are present.
 
 ## Rebuild The Leaderboard
 
