@@ -1,0 +1,46 @@
+diff --git a/packages/coding-agent/src/core/messages.ts b/packages/coding-agent/src/core/messages.ts
+index 81ffabb..f192719 100644
+--- a/packages/coding-agent/src/core/messages.ts
++++ b/packages/coding-agent/src/core/messages.ts
+@@ -8,6 +8,30 @@
+ import type { AgentMessage } from "@earendil-works/pi-agent-core";
+ import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
+ 
++// Provider safety gateways can reject an entire follow-up request when ordinary
++// command output contains hardware identifiers (for example, `ip link` output).
++// Keep the full result in session/UI state, but omit MAC addresses from the copy
++// handed to the model. The surrounding interface and network-state evidence is
++// retained, so the agent can continue debugging instead of losing the turn.
++const MAC_ADDRESS_PATTERN = /(?<![0-9a-f])(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}(?![0-9a-f])/giu;
++const MAC_ADDRESS_PLACEHOLDER = "[MAC address omitted]";
++
++function sanitizeToolObservationText(text: string): string {
++	return text.replace(MAC_ADDRESS_PATTERN, MAC_ADDRESS_PLACEHOLDER);
++}
++
++function sanitizeToolResultForLlm(message: Extract<Message, { role: "toolResult" }>): Message {
++	let changed = false;
++	const content = message.content.map((block) => {
++		if (block.type !== "text") return block;
++		const text = sanitizeToolObservationText(block.text);
++		if (text === block.text) return block;
++		changed = true;
++		return { ...block, text };
++	});
++	return changed ? { ...message, content } : message;
++}
++
+ export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+ 
+ <summary>
+@@ -183,8 +207,9 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
+ 					};
+ 				case "user":
+ 				case "assistant":
+-				case "toolResult":
+ 					return m;
++				case "toolResult":
++					return sanitizeToolResultForLlm(m);
+ 				default:
+ 					// biome-ignore lint/correctness/noSwitchDeclarations: fine
+ 					const _exhaustiveCheck: never = m;

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "change_id": "guard-unconfirmed-git-history-rewrites",
+  "layer": "agent_core_source",
+  "primary_module": "PI_SRC_TOOL_RUNTIME",
+  "compound_modules": [],
+  "files": [
+    "packages/coding-agent/src/core/tools/bash.ts"
+  ],
+  "requires_rebuild": true,
+  "failure_evidence": [
+    "task=terminal-bench-sanitize-git-repo; failure_repeat=0; action=action_15 ran git filter-branch across main and origin/main; verifier=test_no_other_files_changed could not resolve baseline commit d6987af002b122fef54bc0be402062c76488a4d9; pass_repeat=2",
+    "task=terminal-bench-sanitize-git-repo; failure_repeat=1; action=action_30 ran git filter-branch -- --all; verifier=test_no_other_files_changed could not resolve baseline commit d6987af002b122fef54bc0be402062c76488a4d9; pass_repeat=2"
+  ],
+  "root_cause": "The failed agents treated a request to remove credentials from repository contents as authorization to rewrite every commit. Git filter-branch changed commit identities and garbage-collected the fixed baseline object required by verification. The passing repeat made only targeted working-tree replacements and preserved repository identity.",
+  "mechanism": "The default coding-agent bash tool detects direct git filter-branch and git filter-repo invocations before process spawn. It returns a model-visible error explaining the identity/reference risk and directs ordinary sanitization toward working-tree edits. Explicitly required history rewrites remain available by setting PI_ALLOW_GIT_HISTORY_REWRITE=1 on that command.",
+  "evidence_basis": "within_task_contrast",
+  "prior_attempt_disposition": "new_direction",
+  "why_this_component": "The destructive operation reached the default RSIBench execution path through the built-in bash tool. A tool-runtime gate intervenes at the earliest enforceable point, before Git mutates refs, while preserving legitimate history rewriting through an explicit per-command opt-in. Prompt-only advice would be less reliable than blocking the concrete hazardous operation.",
+  "predicted_fixes": [
+    "terminal-bench-sanitize-git-repo repeats that attempt filter-branch/filter-repo will observe the refusal, retain the baseline commit, and pivot to targeted working-tree replacements as in passing repeat 2.",
+    "Other repository-editing tasks will be protected from accidental commit-identity destruction when the user did not explicitly require history rewriting."
+  ],
+  "regression_risks": [
+    "Legitimate history-sanitization tasks must explicitly opt in with PI_ALLOW_GIT_HISTORY_REWRITE=1.",
+    "Indirect or aliased history-rewrite commands are not detected; the narrow matcher intentionally avoids blocking ordinary Git commands."
+  ],
+  "targeted_checks": [
+    "Replay terminal-bench-sanitize-git-repo repeat 0 conditions and verify action_15 is refused, the baseline commit remains resolvable, only the three contaminated files differ, and all verifier tests pass.",
+    "Run a bash-tool command containing PI_ALLOW_GIT_HISTORY_REWRITE=1 git filter-repo --help and confirm it reaches the shell.",
+    "Run ordinary git status and git filter-branch-like text inside an echo command and confirm normal bash execution remains available.",
+    "git diff --check"
+  ],
+  "analysis_tags": [
+    "PI_SRC_TOOL_RUNTIME",
+    "bash-preflight",
+    "destructive-operation-guard",
+    "git-history",
+    "within-task-contrast"
+  ]
+}

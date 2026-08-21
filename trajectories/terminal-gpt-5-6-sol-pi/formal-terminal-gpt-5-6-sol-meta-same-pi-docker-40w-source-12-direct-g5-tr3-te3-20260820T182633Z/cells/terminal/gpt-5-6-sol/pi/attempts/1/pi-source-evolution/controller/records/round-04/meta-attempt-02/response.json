@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Preserved the prior causal objective but moved the guidance from the shared project prompt into the default coding-agent system-prompt source path, repairing the manifest attribution failure without changing the task-level hypothesis. The cumulative candidate now has a real source diff under PI_SRC_PROMPT_LOADER. Static diff checks pass; the full repository check could not run because the worktree lacks the biome executable.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "prefer-live-configuration-for-current-system-requests",
+    "failure_evidence": [
+      "task=terminal-bench-configure-git-webserver; failure_repeat=0; action=action_04 wrote a Dockerfile instead of configuring the available live system; verifier=the requested running clone/push/curl workflow was absent and the repeat received reward 0; pass_repeat=1",
+      "task=terminal-bench-configure-git-webserver; failure_repeat=2; action=action_06 wrote a Dockerfile and later stopped after syntax-only validation; verifier=no operational server was installed or end-to-end verified and the repeat received reward 0; pass_repeat=1"
+    ],
+    "root_cause": "The failed agents interpreted an imperative current-environment configuration request as a request to author deployment artifacts. The environment was directly configurable, but the default guidance did not distinguish live state changes from packaging. Passing repeat 1 installed and configured Git, SSH, and nginx in the current environment and exercised clone, push, and HTTP retrieval.",
+    "mechanism": "The default coding-agent system prompt now distinguishes current-system configuration from artifact creation. It directs the model to establish the requested operational state and verify the user's exact end-to-end workflow, while preserving Dockerfiles and setup scripts for explicit packaging requests or cases where direct configuration is blocked.",
+    "evidence_basis": "within_task_contrast",
+    "prior_attempt_disposition": "rollback_and_pivot",
+    "why_this_component": "packages/coding-agent/src/core/system-prompt.ts constructs the default model-visible prompt used by the RSIBench task agent. The failure is missing task policy rather than incorrect tool execution: bash could install and configure the services, but the model chose inert artifacts. Placing the guidance in the default source prompt preserves the causal intervention while giving the controller an attributable source module; a tool-runtime block on Dockerfile creation would be overbroad.",
+    "predicted_fixes": [
+      "terminal-bench-configure-git-webserver repeats will configure live services and validate clone, push, and curl instead of stopping after writing container artifacts.",
+      "Other operational configuration and repair requests will be less likely to end with unexecuted scripts or deployment manifests when the requested state can be established directly."
+    ],
+    "regression_risks": [
+      "Ambiguous infrastructure requests may favor direct mutation when reproducible artifacts were implicitly desired; the guidance retains artifact creation when packaging is requested or direct configuration is blocked.",
+      "Direct installation can consume more task time than writing configuration files, although it better satisfies operational requests."
+    ],
+    "targeted_checks": [
+      "Replay terminal-bench-configure-git-webserver repeat 0 conditions and verify the implementation configures the live environment rather than writing a Dockerfile, then confirm clone, push, and curl return hello world.",
+      "Prompt the default agent explicitly to create a Dockerfile for the same service and confirm it still creates deployment artifacts rather than mutating the host.",
+      "Build a default system prompt and verify both current-system guidance lines are present exactly once.",
+      "git diff --check"
+    ],
+    "analysis_tags": [
+      "PI_SRC_PROMPT_LOADER",
+      "default-system-prompt",
+      "task-intent",
+      "live-configuration",
+      "end-to-end-validation",
+      "within-task-contrast"
+    ]
+  }
+}

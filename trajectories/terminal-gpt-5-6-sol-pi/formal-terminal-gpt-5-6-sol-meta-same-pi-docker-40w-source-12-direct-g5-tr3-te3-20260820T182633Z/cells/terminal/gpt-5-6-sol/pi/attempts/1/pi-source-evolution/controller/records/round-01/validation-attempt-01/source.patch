@@ -1,0 +1,34 @@
+diff --git a/packages/coding-agent/src/core/tools/bash.ts b/packages/coding-agent/src/core/tools/bash.ts
+index 1c245cb..e0fcb12 100644
+--- a/packages/coding-agent/src/core/tools/bash.ts
++++ b/packages/coding-agent/src/core/tools/bash.ts
+@@ -199,6 +199,21 @@ export interface BashToolOptions {
+ const BASH_PREVIEW_LINES = 5;
+ const BASH_UPDATE_THROTTLE_MS = 100;
+ 
++const HISTORY_REWRITE_COMMAND =
++	/(?:^|[;&|()\n]\s*)(?:[\w./-]+\/)?git\s+(?:filter-branch|filter-repo)(?:\s|$)/m;
++
++function assertHistoryRewriteIsConfirmed(command: string, env: NodeJS.ProcessEnv): void {
++	if (env.PI_ALLOW_GIT_HISTORY_REWRITE === "1" || !HISTORY_REWRITE_COMMAND.test(command)) return;
++	throw new Error(
++		[
++			"Refusing to rewrite Git history without explicit confirmation.",
++			"History rewriting changes commit identities and can invalidate references that callers, CI, or verification tools still require.",
++			"If the task only asks to change repository contents, edit the current working tree instead.",
++			"If rewriting every commit is explicitly required, rerun with PI_ALLOW_GIT_HISTORY_REWRITE=1 for this command.",
++		].join("\n"),
++	);
++}
++
+ type BashRenderState = {
+ 	startedAt: number | undefined;
+ 	endedAt: number | undefined;
+@@ -339,6 +354,7 @@ export function createBashToolDefinition(
+ 		) {
+ 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
+ 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx);
++			assertHistoryRewriteIsConfirmed(spawnContext.command, spawnContext.env);
+ 			const output = new OutputAccumulator({ tempFilePrefix: "pi-bash" });
+ 			let acceptingOutput = true;
+ 			let updateTimer: NodeJS.Timeout | undefined;

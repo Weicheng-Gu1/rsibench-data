@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "change_id": "validate-numerical-axis-semantics-before-fitting",
+  "failure_evidence": [
+    "task=terminal-bench-raman-fitting; failure_repeat=2; action=action_13 wrote untransformed peak centers x0=6327.220129 and x0=3745.049044 after fitting the raw inverse-wavelength axis; verifier=/app/results.json contained values in the wrong output domain and the repeat received reward 0; pass_repeat=0",
+    "task=terminal-bench-raman-fitting; failure_repeat=1; action=action_20 selected window-sensitive linear-baseline fit parameters despite materially varying fits across action_17 through action_19; verifier=the reported parameters failed external verification and the repeat received reward 0; pass_repeat=0"
+  ],
+  "root_cause": "The failed Raman agents began fitting before firmly establishing the first column's physical domain and the requested parameter convention. Repeat 2 reported centers on the raw inverse-wavelength axis instead of transforming it to Raman shift, while repeat 1 transformed the axis but selected parameters from unstable window and baseline variants without validating them against the requested convention. Passing repeat 0 explicitly examined the reciprocal transformation, fit in the 1580 and 2670 output domain, and reported stable constant-offset Lorentzian parameters.",
+  "mechanism": "The default coding-agent system prompt now directs numerical-data work to establish axis meaning, units, and required transformations before fitting or reporting, then validate parameter conventions and fit stability against the requested output domain. This instruction is present on the default RSIBench task-agent path and changes the model's decision before it commits fitted values to an output artifact.",
+  "evidence_basis": "within_task_contrast",
+  "prior_attempt_disposition": "improve_accepted",
+  "why_this_component": "The tools returned the data faithfully and executed the fitting code correctly; the causal failure was the model's missing numerical-analysis procedure. packages/coding-agent/src/core/system-prompt.ts constructs the default model-visible guidance used by RSIBench. A tool-runtime transformation would be unsafe because column semantics are task-dependent, while equivalent shared guidance would have the same behavioral mechanism without improving default-path reach.",
+  "predicted_fixes": [
+    "terminal-bench-raman-fitting repeats will identify the reciprocal axis transformation before fitting and report centers in the requested Raman-shift domain rather than raw-axis values.",
+    "Raman fitting runs that compare several windows or baseline models will validate stability and parameter conventions before choosing values, reducing incorrect but syntactically valid results.",
+    "Other numerical data tasks with encoded, reciprocal, logarithmic, or otherwise transformed axes will be less likely to fit and report values in the wrong domain."
+  ],
+  "regression_risks": [
+    "Simple numerical tasks may spend an extra step checking already-obvious axis semantics.",
+    "Ambiguous datasets may prompt additional validation rather than immediately producing an estimate."
+  ],
+  "targeted_checks": [
+    "Replay terminal-bench-raman-fitting repeat 2 conditions and verify the agent explicitly derives the axis transformation before fitting, writes G and 2D x0 values near 1580 and 2670 rather than 6327 and 3745, and passes the external verifier.",
+    "Replay repeat 1 conditions and verify the agent checks fit stability and parameter conventions before selecting results.json values, then passes the external verifier.",
+    "Build the default system prompt and verify the numerical-data guideline appears exactly once.",
+    "git diff --check"
+  ],
+  "analysis_tags": [
+    "PI_SRC_PROMPT_LOADER",
+    "default-system-prompt",
+    "numerical-analysis",
+    "axis-semantics",
+    "fit-validation",
+    "within-task-contrast"
+  ]
+}

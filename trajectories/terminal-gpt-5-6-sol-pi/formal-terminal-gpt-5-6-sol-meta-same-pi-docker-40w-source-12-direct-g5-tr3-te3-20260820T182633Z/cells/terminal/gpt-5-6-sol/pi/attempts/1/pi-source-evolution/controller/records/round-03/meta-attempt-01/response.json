@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Enable direct model inspection of portable analysis images produced during visual reverse-engineering, replacing lossy terminal rasterization and guesswork with a standard image attachment on the default read-tool path.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "read-portable-analysis-images",
+    "failure_evidence": [
+      "task=terminal-bench-gcode-to-text; failure_repeat=0; action=action_24 read /app/pcam3p3.pgm but received raw text rather than a model-visible image, followed by action_33 guessing \"Congratulations! You found me!\"; verifier=the decoded output was incorrect and the trajectory received reward 0; pass_repeat=none",
+      "task=terminal-bench-gcode-to-text; failure_repeat=1; action=action_13 read /app/pca.pgm but received raw text rather than a model-visible image, forcing extensive ASCII rasterization before action_21 produced an incorrect OCR result; verifier=the trajectory received reward 0; pass_repeat=none"
+    ],
+    "root_cause": "The read tool recognizes common web and bitmap formats but treats PGM/PPM/PNM files as text. All gcode-to-text repeats generated portable raster projections, yet the model could not visually inspect those artifacts and instead relied on degraded terminal renderings or unsupported external OCR, producing three different incorrect guesses.",
+    "mechanism": "The default coding-agent read tool now detects portable graymap/pixmap extensions, validates and parses binary or ASCII PNM data, converts it in memory to a standards-compliant PNG, and passes that PNG through the existing image processing and model attachment path. No generated task file is modified.",
+    "evidence_basis": "cross_task_pattern",
+    "prior_attempt_disposition": "improve_accepted",
+    "why_this_component": "packages/coding-agent/src/core/tools/read.ts is instantiated by the default coding tool set and was the exact runtime boundary reached by the failed PGM read actions. Tool runtime is the earliest component able to turn an otherwise unreadable analysis artifact into a model-visible observation; prompt guidance cannot supply missing pixels.",
+    "predicted_fixes": [
+      "terminal-bench-gcode-to-text repeats that generate and read PGM projections will receive the actual rendered projection as an image attachment and can transcribe the geometry instead of guessing from ASCII downsampling.",
+      "Other visual-analysis tasks that emit dependency-free PGM, PPM, or PNM artifacts can inspect them directly without installing image conversion packages."
+    ],
+    "regression_risks": [
+      "Files with portable-image extensions that were intentionally meant to be read as source text will be presented as images when they contain a valid PNM header.",
+      "Very large valid portable images consume conversion memory, bounded by the parser's 200-million-sample limit and existing image resize path."
+    ],
+    "targeted_checks": [
+      "Replay terminal-bench-gcode-to-text repeat 0 through action_24 and verify read returns an image/png attachment whose projection is visually legible, then verify /app/out.txt against the external task verifier.",
+      "Read representative binary P5/P6 and ASCII P2/P3 fixtures, including comments and non-255 maxima, and verify decoded PNG dimensions and pixel values.",
+      "Read malformed or oversized .pgm input and verify it safely falls back to ordinary text handling.",
+      "git diff --check"
+    ],
+    "analysis_tags": [
+      "PI_SRC_TOOL_RUNTIME",
+      "read-tool",
+      "portable-anymap",
+      "image-observation",
+      "visual-reverse-engineering"
+    ]
+  }
+}
