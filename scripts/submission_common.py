@@ -14,6 +14,7 @@ from typing import Any, Iterable
 TRAJECTORY_MANIFEST = "trajectory-manifest.json"
 RECEIPT_ROOT = Path("submissions/github")
 TRUSTED_INDEX = Path("leaderboard/submissions.json")
+PUBLIC_PRICE_INDEX = Path("pricing/public-list-prices.json")
 DERIVED_INDEXES = {
     Path("leaderboard/results.csv"),
     Path("leaderboard/results.jsonl"),
@@ -37,6 +38,13 @@ def read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"expected a JSON object: {path}")
     return value
+
+
+def public_price_contract(root: Path) -> dict[str, Any]:
+    payload = read_json(root / PUBLIC_PRICE_INDEX)
+    if payload.get("schema_version") != 1 or not isinstance(payload.get("models"), dict):
+        raise ValueError(f"invalid public price registry: {root / PUBLIC_PRICE_INDEX}")
+    return payload
 
 
 def slug(value: str) -> str:
@@ -236,14 +244,15 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
         has_cost = endpoints["a0"].get("cost_usd") is not None
         if has_cost and not isinstance(pricing, dict):
             raise ValueError(f"{path}: priced held-out usage requires pricing provenance")
-        if manifest.get("model") == "gpt-5-5" and has_cost:
-            expected_prices = {
-                "model": "gpt-5.5",
-                "input_usd_per_million": 5.0,
-                "cached_input_usd_per_million": 0.5,
-                "output_usd_per_million": 30.0,
-                "source": "https://developers.openai.com/api/docs/models/gpt-5.5",
-            }
+        price_contract = public_price_contract(root)
+        model_name = str(manifest.get("model") or "")
+        expected_prices = price_contract["models"].get(model_name)
+        unpriced_models = price_contract.get("unpriced_models") or {}
+        if has_cost and model_name in unpriced_models:
+            raise ValueError(
+                f"{path}: {model_name} has no published per-token public list price"
+            )
+        if has_cost and isinstance(expected_prices, dict):
             price_mismatches = {
                 key: pricing.get(key)
                 for key, expected_value in expected_prices.items()
@@ -251,7 +260,8 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
             }
             if price_mismatches:
                 raise ValueError(
-                    f"{path}: GPT-5.5 held-out cost must use public list pricing {price_mismatches}"
+                    f"{path}: {model_name} held-out cost must use public list pricing "
+                    f"{price_mismatches}"
                 )
     history = manifest.get("candidate_history")
     if enforce_current_protocol:

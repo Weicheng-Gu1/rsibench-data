@@ -29,6 +29,7 @@ def copy_protocol(repo: Path) -> None:
         "scripts/validate_submission.py",
         "scripts/record_submission.py",
         "scripts/publish_submission.py",
+        "pricing/public-list-prices.json",
     ):
         target = repo / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +145,20 @@ class SubmissionProtocolTest(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("submitter-controlled identity is forbidden", completed.stdout + completed.stderr)
 
+    def test_public_price_registry_covers_scored_models(self) -> None:
+        prices = json.loads(
+            (ROOT / "pricing/public-list-prices.json").read_text()
+        )["models"]
+        self.assertEqual(
+            set(prices),
+            {
+                "gpt-5-6-sol", "gpt-5-5", "gpt-5-4",
+                "claude-opus-5", "claude-opus-4-8",
+                "deepseek-v4-flash", "deepseek-v4-pro", "kimi-k3",
+            },
+        )
+        self.assertNotIn("glm-5-2", prices)
+
     def test_merge_receipt_builds_github_linked_site_feed(self) -> None:
         base, head = self.commit_submission()
         validated = subprocess.run(
@@ -163,7 +178,7 @@ class SubmissionProtocolTest(unittest.TestCase):
         )
         self.assertEqual(recorded.returncode, 0, recorded.stderr)
         pricing = self.repo / "pricing/cost-estimates.json"
-        pricing.parent.mkdir()
+        pricing.parent.mkdir(exist_ok=True)
         pricing.write_text(json.dumps({
             "schema_version": 2,
             "runs": {
