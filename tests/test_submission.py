@@ -155,9 +155,12 @@ class SubmissionProtocolTest(unittest.TestCase):
                 "gpt-5-6-sol", "gpt-5-5", "gpt-5-4",
                 "claude-opus-5", "claude-opus-4-8",
                 "deepseek-v4-flash", "deepseek-v4-pro", "kimi-k3",
+                "glm-5-2",
             },
         )
-        self.assertNotIn("glm-5-2", prices)
+        self.assertEqual(prices["glm-5-2"]["input_usd_per_million"], 1.4)
+        self.assertEqual(prices["glm-5-2"]["cached_input_usd_per_million"], 0.26)
+        self.assertEqual(prices["glm-5-2"]["output_usd_per_million"], 4.4)
 
     def test_merge_receipt_builds_github_linked_site_feed(self) -> None:
         base, head = self.commit_submission()
