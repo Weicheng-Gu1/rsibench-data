@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Across the frozen TRAIN split, every trajectory that terminated on a degenerate empty assistant response (stopReason=\"stop\" with zero tool calls and no text/thinking content) failed the task: all three write-compressor rollouts (task 0/3) and the single failed make-mips-interpreter contrast (repeat_2). In write-compressor the agent read decomp.c, ran one bash exploration, then the provider stream truncated (\"Anthropic stream ended before message_stop\"), retries were exhausted, and the model emitted an empty stop message; the agent loop treated this as task completion and ended without ever writing /app/data.comp, so all three verifier tests failed on file non-existence. The agent-loop had no recovery for a content-less terminal response. I added a bounded empty-response recovery in packages/agent/src/agent-loop.ts (PI_SRC_AGENT_LOOP): when a turn ends with stopReason=\"stop\", no tool calls, and no non-whitespace text/thinking, the loop drops the empty assistant turn from the working context and injects a user nudge to continue (max 3 times), so the agent actually attempts/finishes the task instead of wasting the run. This is on the default Pi task-agent execution path and the injected nudge is consumed by the same loop's pending-message block on the next iteration.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "agent-loop-empty-response-recovery-01",
+    "failure_evidence": [
+      "/app/pi-source-evidence/references/6f7f46a114ead9b2-training-failures.json",
+      "/app/pi-source-evidence/references/8defbe09353c417e-pi-mechanism-evidence.json",
+      "task=terminal-bench-write-compressor; failure_repeat=0; action=action_03 bash explores data.txt then model emits empty stop assistant message (content=[]) and loop ends; verifier=test_compressed_file_exists/test_compression_size failed: /app/data.comp does not exist (0/3); pass_repeat=none",
+      "task=terminal-bench-make-mips-interpreter; failure_repeat=2; action=after 'Anthropic stream ended before message_stop' error the model returns an empty stop message and the run ends with no final edit; verifier=reward 0.0 (contrast repeats 0,1 passed); pass_repeat=0,1",
+      "training_mean_reward=0.644444",
+      "failed_or_partial_trajectories=19"
+    ],
+    "root_cause": "The agent loop in packages/agent/src/agent-loop.ts treats any non-error terminal assistant turn as task completion. A degenerate empty response (stopReason=\"stop\" with no tool calls and no textual/thinking content), commonly produced after a truncated/transient provider stream, causes the loop to emit agent_end immediately, ending the entire run without attempting or finishing the task.",
+    "mechanism": "Add isEmptyAssistantResponse() plus a bounded recovery in runLoop: when a turn produces no tool calls, no pending/steering messages, stopReason===\"stop\", and empty content, increment a per-run counter (max 3), pop the empty assistant turn from the working context so the next provider request carries no empty assistant message, and inject a synthetic user nudge into pendingMessages. The inner loop then streams a fresh assistant response, so the model continues and can write required outputs (e.g. /app/data.comp) instead of the run silently ending.",
+    "evidence_basis": "cross_task_pattern",
+    "prior_attempt_disposition": "new_direction",
+    "why_this_component": "The defect is in turn-progression/stopping logic: the loop stops before acting on a content-less terminal response. Module guidance for PI_SRC_AGENT_LOOP explicitly covers 'the agent stops before acting or continues after a terminal state'. The empty-response termination and recovery both live in runLoop, and the injected nudge is consumed by the same loop, so no other component (provider runtime already correctly reports the transient error; observation/context are not lossy here) is the earliest causal break.",
+    "predicted_fixes": [
+      "terminal-bench-write-compressor: after the empty stop, the loop nudges the model to continue, so it writes /app/data.comp and can satisfy test_compressed_file_exists / test_compression_size / test_decompression_produces_original, moving the task off 0/3.",
+      "terminal-bench-make-mips-interpreter repeat_2 and similar runs that hit a post-stream-truncation empty stop now continue to a real completion instead of ending with no final edits, improving pass@3 robustness."
+    ],
+    "regression_risks": [
+      "A model that legitimately returns an empty stop (rare/degenerate) will receive up to 3 extra nudges before the run ends; bounded so it cannot loop infinitely and adds at most a few turns.",
+      "Popping the empty assistant turn relies on it being the last context message; guarded by identity check so it is a no-op if the context was replaced, in which case only the nudge is injected.",
+      "Slight increase in tokens/turns for runs that previously ended empty; these were already failing, so expected value is positive."
+    ],
+    "targeted_checks": [
+      "agent-loop",
+      "cancel-error-smoke",
+      "re-run terminal-bench-write-compressor pass@3: if it remains 0/3 with the run still ending on an empty stop and no /app/data.comp, the mechanism is falsified",
+      "re-run terminal-bench-make-mips-interpreter pass@3 to confirm no regression on the previously passing repeats"
+    ],
+    "analysis_tags": [
+      "empty-response-recovery",
+      "completion-state-detection",
+      "stream-truncation",
+      "agent-loop-stopping",
+      "cross-task-pattern"
+    ]
+  }
+}
