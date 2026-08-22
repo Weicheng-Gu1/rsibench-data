@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Investigated the frozen TRAIN evidence (opportunity index, evolution history, training-failures) and read raw failed and successful trajectories. The clearest recurring, addressable weakness is deliverable-persistence: on terminal-bench-gcode-to-text the model demonstrably derives the correct answer (flag{gcOd3_iz_ch4LLenGiNg}) around t+600s yet keeps refining OCR and never writes the required /app/out.txt, so the 900s harness kill scores 0 on all three repeats. Successful trajectories for artifact tasks (write-compressor, configure-git-webserver, tune-mjcf) write their deliverable early and keep refining, while failing runs defer it — a cross-task pattern of missing behavioral policy, not broken runtime. Round-03 already tried the time-based agent-loop finalization nudge and was performance-rejected (falsified); I rolled back and pivoted to the correct owner for a missing conditional task strategy: SHARED_RULES. The added rule instructs the agent to write required outputs to their exact paths as soon as a plausible candidate exists, keep updating them while refining, and never end/approach the time limit without the deliverable persisted. This reinforces what passing runs already do (near-zero regression) while giving failing timeout/over-refinement runs a saved best-effort artifact.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "persist-required-deliverables-rule-01",
+    "failure_evidence": [
+      "/app/pi-source-evidence/references/e242de62090e9603-training-opportunity-index.json",
+      "/app/pi-source-evidence/references/e9819e441a886d4e-training-failures.json",
+      "/app/pi-source-evidence/references/9b1d6caf1bc133c7-trajectory.jsonl",
+      "/app/pi-source-evidence/references/031a4656ca664d89-trajectory.jsonl",
+      "task=terminal-bench-gcode-to-text; failure_repeat=0; action=action_~57 model OCR-decodes candidate answer flag{gcOd3_iz_ch4LLenGiNg} by ~t+600s but keeps disambiguating O/0 and case and never writes the required /app/out.txt; verifier=harbor AgentTimeoutError after 900s, reward 0.0 (all 3 repeats time out identically); pass_repeat=none",
+      "training_mean_reward=0.733333",
+      "failed_or_partial_trajectories=12"
+    ],
+    "root_cause": "The default task agent has no durable policy to persist a task's required output artifact early. When a task requires producing a specific deliverable file (gcode /app/out.txt, raman /app/results.json, write-compressor /app/data.comp, model-extraction /app/stolen_A1.npy), the model tends to defer writing until it is fully satisfied. On gcode-to-text it reaches a correct candidate answer well before the deadline but keeps refining and never writes /app/out.txt, so the wall-clock kill leaves no deliverable and scores 0 on every repeat. This is a missing conditional task strategy, not a runtime defect: the model already knows how to write files; it simply does not prioritize committing its answer to disk.",
+    "mechanism": "Add a SHARED_RULES policy in .pi/rules/default.md ('Persist required deliverables early') that triggers whenever a task requires producing a specific output artifact. It directs the agent to (1) create the required output with its best current answer as soon as a plausible candidate exists and keep overwriting/updating it while verifying and refining, (2) treat writing the deliverable as a prerequisite rather than a final step so investigation continues after the file exists, and (3) before finishing, confirm every required output file exists at its exact requested path and format, never ending a session or approaching the time limit without the deliverable committed to disk. The rule is loaded/injected by the RSIBench rules resource path (.pi/rules/**) that the controller validates via rule-load-smoke, so it reaches the default task-agent execution path.",
+    "evidence_basis": "cross_task_pattern",
+    "prior_attempt_disposition": "rollback_and_pivot",
+    "why_this_component": "The causal break is a missing task strategy/policy, which the module developer guide maps explicitly to SHARED_PROMPT/RULES/SKILLS ('Missing task strategy -> shared resource'). Within that, the guidance is conditional on a stated trigger (task requires an output artifact), which is exactly SHARED_RULES' domain ('a conditional policy... should apply only when its stated trigger is present'). Source cannot cleanly implement this: the agent-loop deadline/finalization nudge that targeted the same failure was performance-rejected in round-03 (falsified and must not be rephrased in another file), and a generic file-write mechanism cannot know a task's required deliverable path. SHARED_PROMPT remains eligible but this guidance is conditional, so SHARED_RULES is the better semantic owner and preserves prompt eligibility. The rule is a fresh module with no prior rejection.",
+    "predicted_fixes": [
+      "terminal-bench-gcode-to-text (all 3 repeats): the model writes its decoded candidate answer to /app/out.txt as soon as it has one (~t+600s) and keeps updating it, so even when the 900s harness kill fires mid-refinement the required file exists with the flag, moving repeats off a guaranteed 0/3.",
+      "terminal-bench-write-compressor repeat_2 and other near-deadline artifact tasks: writing /app/data.comp early and updating it reduces the chance a timeout leaves no deliverable, improving pass@3 robustness.",
+      "Generally raises the floor on any artifact-producing task by ensuring a best-effort deliverable is always persisted before the run stops or times out, without changing correct behavior on tasks that already write their outputs."
+    ],
+    "regression_risks": [
+      "Successful trajectories already write their deliverables, so the rule reinforces existing behavior; the main risk is minor prompt perturbation on borderline passing repeats under pass@3 sampling noise.",
+      "A task where an early partial write could be scored before completion is not expected in this split (graders check final on-disk state), and the rule explicitly says to keep updating the same output, so it should not cause premature stopping.",
+      "Very short/no-artifact tasks are unaffected because the rule's trigger (a required output artifact) is not present."
+    ],
+    "targeted_checks": [
+      "resource-preflight",
+      "rule-load-smoke",
+      "re-run terminal-bench-gcode-to-text pass@3: if runs still reach 900s AgentTimeoutError with a decoded candidate answer but no /app/out.txt written, the mechanism is falsified",
+      "re-run currently-passing artifact tasks (write-compressor repeats 0/1, configure-git-webserver, tune-mjcf, regex-log) pass@3 to confirm no regression from the added policy"
+    ],
+    "analysis_tags": [
+      "deliverable-persistence",
+      "completion-state-detection",
+      "missing-task-strategy",
+      "shared-rules",
+      "cross-task-pattern",
+      "timeout-mitigation",
+      "rollback-and-pivot-from-round-03"
+    ]
+  }
+}

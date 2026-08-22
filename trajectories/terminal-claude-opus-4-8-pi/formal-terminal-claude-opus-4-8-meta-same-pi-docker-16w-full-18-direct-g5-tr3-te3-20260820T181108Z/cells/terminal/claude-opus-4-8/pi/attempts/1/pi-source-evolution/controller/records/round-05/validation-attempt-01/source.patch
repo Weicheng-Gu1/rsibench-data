@@ -1,0 +1,195 @@
+diff --git a/packages/ai/src/api/anthropic-messages.ts b/packages/ai/src/api/anthropic-messages.ts
+index 99f698b..869fc02 100644
+--- a/packages/ai/src/api/anthropic-messages.ts
++++ b/packages/ai/src/api/anthropic-messages.ts
+@@ -29,6 +29,7 @@ import type {
+ 	ToolCall,
+ 	ToolResultMessage,
+ } from "../types.ts";
++import { combineAbortSignals } from "../utils/abort-signals.ts";
+ import { splitDeferredTools } from "../utils/deferred-tools.ts";
+ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
+ import { headersToRecord } from "../utils/headers.ts";
+@@ -42,6 +43,69 @@ import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copi
+ import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
+ import { transformMessages } from "./transform-messages.ts";
+ 
++/**
++ * Default idle timeout for Anthropic streaming responses, in milliseconds.
++ *
++ * The Anthropic SDK request `timeout` only guards the initial HTTP response (the
++ * time to receive response headers). Once headers arrive we iterate the raw SSE
++ * body ourselves via `reader.read()`, which has no timeout of its own: a stream
++ * that stalls mid-flight (dead socket, no bytes for minutes) would otherwise hang
++ * until the overall agent deadline and surface as a fatal AgentTimeoutError with
++ * reward 0. Legitimate generation continuously emits SSE activity (text/thinking
++ * deltas, and Anthropic's periodic keep-alive `ping` events), so this watchdog
++ * only trips on genuinely stalled connections. When it trips, the in-flight
++ * request is aborted and surfaced as a retryable "stream idle timeout" error so
++ * the agent's existing retry/recovery path can re-issue the request while there
++ * is still budget left. Consecutive idle retries use 1x, 1.6x, then 2x the base.
++ * Override the 300s base with PI_STREAM_IDLE_TIMEOUT_MS (0 disables).
++ */
++const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
++let consecutiveStreamIdleTimeouts = 0;
++
++interface StreamIdleWatchdog {
++	signal: AbortSignal | undefined;
++	/** Restart the idle timer. Call when stream activity is observed. */
++	reset: () => void;
++	/** Clear the timer and release resources. Idempotent. */
++	cleanup: () => void;
++}
++
++function resolveStreamIdleTimeoutMs(env: ProviderEnv | undefined): number {
++	const raw = getProviderEnvValue("PI_STREAM_IDLE_TIMEOUT_MS", env);
++	if (raw === undefined) return DEFAULT_STREAM_IDLE_TIMEOUT_MS;
++	const parsed = Number(raw);
++	if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_STREAM_IDLE_TIMEOUT_MS;
++	return parsed;
++}
++
++function createStreamIdleWatchdog(idleMs: number): StreamIdleWatchdog {
++	if (!Number.isFinite(idleMs) || idleMs <= 0) {
++		return { signal: undefined, reset: () => {}, cleanup: () => {} };
++	}
++	const controller = new AbortController();
++	let timer: ReturnType<typeof setTimeout> | undefined;
++	const arm = () => {
++		if (controller.signal.aborted) return;
++		if (timer) clearTimeout(timer);
++		timer = setTimeout(() => controller.abort(), idleMs);
++	};
++	arm();
++	return {
++		signal: controller.signal,
++		reset: arm,
++		cleanup: () => {
++			if (timer) {
++				clearTimeout(timer);
++				timer = undefined;
++			}
++		},
++	};
++}
++
++function describeStreamIdleTimeout(idleMs: number): string {
++	return `Provider stream idle timeout: no response data received for ${Math.ceil(idleMs / 1000)}s. The connection appears stalled; retrying the request.`;
++}
++
+ /**
+  * Resolve cache retention preference.
+  * Defaults to "short" and uses PI_CACHE_RETENTION for backward compatibility.
+@@ -387,6 +451,7 @@ function consumeLine(text: string): { line: string; rest: string } | null {
+ async function* iterateSseMessages(
+ 	body: ReadableStream<Uint8Array>,
+ 	signal?: AbortSignal,
++	onActivity?: () => void,
+ ): AsyncGenerator<ServerSentEvent> {
+ 	const reader = body.getReader();
+ 	const decoder = new TextDecoder();
+@@ -403,6 +468,9 @@ async function* iterateSseMessages(
+ 			if (done) {
+ 				break;
+ 			}
++			// Any received bytes (including Anthropic keep-alive ping events) count as
++			// stream activity and reset the idle watchdog.
++			onActivity?.();
+ 
+ 			buffer += decoder.decode(value, { stream: true });
+ 			let consumed = consumeLine(buffer);
+@@ -446,6 +514,7 @@ async function* iterateSseMessages(
+ async function* iterateAnthropicEvents(
+ 	response: Response,
+ 	signal?: AbortSignal,
++	onActivity?: () => void,
+ ): AsyncGenerator<RawMessageStreamEvent> {
+ 	if (!response.body) {
+ 		throw new Error("Attempted to iterate over an Anthropic response with no body");
+@@ -454,7 +523,7 @@ async function* iterateAnthropicEvents(
+ 	let sawMessageStart = false;
+ 	let sawMessageEnd = false;
+ 
+-	for await (const sse of iterateSseMessages(response.body, signal)) {
++	for await (const sse of iterateSseMessages(response.body, signal, onActivity)) {
+ 		if (sse.event === "error") {
+ 			throw new Error(sse.data);
+ 		}
+@@ -510,6 +579,11 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
+ 			timestamp: Date.now(),
+ 		};
+ 
++		const idleMs =
++			resolveStreamIdleTimeoutMs(options?.env) * [1, 1.6, 2][Math.min(consecutiveStreamIdleTimeouts, 2)]!;
++		const idle = createStreamIdleWatchdog(idleMs);
++		const combined = combineAbortSignals([options?.signal, idle.signal]);
++
+ 		try {
+ 			let client: Anthropic;
+ 			let isOAuth: boolean;
+@@ -551,7 +625,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
+ 				params = nextParams as MessageCreateParamsStreaming;
+ 			}
+ 			const requestOptions = {
+-				...(options?.signal ? { signal: options.signal } : {}),
++				...(combined.signal ? { signal: combined.signal } : {}),
+ 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+ 				maxRetries: 0,
+ 			};
+@@ -560,7 +634,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
+ 				{
+ 					maxRetries: options?.maxRetries,
+ 					maxRetryDelayMs: options?.maxRetryDelayMs,
+-					signal: options?.signal,
++					signal: combined.signal,
+ 				},
+ 			);
+ 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+@@ -569,7 +643,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
+ 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
+ 			const blocks = output.content as Block[];
+ 
+-			for await (const event of iterateAnthropicEvents(response, options?.signal)) {
++			for await (const event of iterateAnthropicEvents(response, combined.signal, idle.reset)) {
+ 				if (event.type === "message_start") {
+ 					output.responseId = event.message.id;
+ 					// Capture initial token usage from message_start event
+@@ -750,16 +824,36 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
+ 				throw new Error(output.errorMessage || "An unknown error occurred");
+ 			}
+ 
++			idle.cleanup();
++			combined.cleanup();
++			consecutiveStreamIdleTimeouts = 0;
+ 			stream.push({ type: "done", reason: output.stopReason, message: output });
+ 			stream.end();
+ 		} catch (error) {
++			idle.cleanup();
++			combined.cleanup();
+ 			for (const block of output.content) {
+ 				delete (block as { index?: number }).index;
+ 				// partialJson is only a streaming scratch buffer; never persist it.
+ 				delete (block as { partialJson?: string }).partialJson;
+ 			}
+-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+-			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
++			if (options?.signal?.aborted) {
++				output.stopReason = "aborted";
++				output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
++				consecutiveStreamIdleTimeouts = 0;
++			} else if (idle.signal?.aborted) {
++				// A stalled stream (no SSE bytes for the idle window) is not covered by the
++				// SDK request timeout, which only guards the initial response headers. Surface
++				// it as a retryable error so the agent re-issues the request instead of hanging
++				// until the overall turn/agent deadline (which would score the whole run 0).
++				output.stopReason = "error";
++				output.errorMessage = describeStreamIdleTimeout(idleMs);
++				consecutiveStreamIdleTimeouts++;
++			} else {
++				consecutiveStreamIdleTimeouts = 0;
++				output.stopReason = "error";
++				output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
++			}
+ 			stream.push({ type: "error", reason: output.stopReason, error: output });
+ 			stream.end();
+ 		}

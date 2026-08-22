@@ -1,0 +1,250 @@
+{
+  "schema_version": 2,
+  "purpose": "Falsifiable cross-round memory without controller-defined semantic mechanism classes. The Meta-agent owns causal interpretation.",
+  "attempts": [
+    {
+      "candidate_id": "round-01",
+      "status": "accepted",
+      "reason": "direct_full_training_improved",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "agent-loop-empty-response-recovery-01",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/agent-loop.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "/app/pi-source-evidence/references/6f7f46a114ead9b2-training-failures.json",
+          "/app/pi-source-evidence/references/8defbe09353c417e-pi-mechanism-evidence.json",
+          "task=terminal-bench-write-compressor; failure_repeat=0; action=action_03 bash explores data.txt then model emits empty stop assistant message (content=[]) and loop ends; verifier=test_compressed_file_exists/test_compression_size failed: /app/data.comp does not exist (0/3); pass_repeat=none",
+          "task=terminal-bench-make-mips-interpreter; failure_repeat=2; action=after 'Anthropic stream ended before message_stop' error the model returns an empty stop message and the run ends with no final edit; verifier=reward 0.0 (contrast repeats 0,1 passed); pass_repeat=0,1",
+          "training_mean_reward=0.644444",
+          "failed_or_partial_trajectories=19"
+        ],
+        "root_cause": "The agent loop in packages/agent/src/agent-loop.ts treats any non-error terminal assistant turn as task completion. A degenerate empty response (stopReason=\"stop\" with no tool calls and no textual/thinking content), commonly produced after a truncated/transient provider stream, causes the loop to emit agent_end immediately, ending the entire run without attempting or finishing the task.",
+        "mechanism": "Add isEmptyAssistantResponse() plus a bounded recovery in runLoop: when a turn produces no tool calls, no pending/steering messages, stopReason===\"stop\", and empty content, increment a per-run counter (max 3), pop the empty assistant turn from the working context so the next provider request carries no empty assistant message, and inject a synthetic user nudge into pendingMessages. The inner loop then streams a fresh assistant response, so the model continues and can write required outputs (e.g. /app/data.comp) instead of the run silently ending.",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The defect is in turn-progression/stopping logic: the loop stops before acting on a content-less terminal response. Module guidance for PI_SRC_AGENT_LOOP explicitly covers 'the agent stops before acting or continues after a terminal state'. The empty-response termination and recovery both live in runLoop, and the injected nudge is consumed by the same loop, so no other component (provider runtime already correctly reports the transient error; observation/context are not lossy here) is the earliest causal break.",
+        "predicted_fixes": [
+          "terminal-bench-write-compressor: after the empty stop, the loop nudges the model to continue, so it writes /app/data.comp and can satisfy test_compressed_file_exists / test_compression_size / test_decompression_produces_original, moving the task off 0/3.",
+          "terminal-bench-make-mips-interpreter repeat_2 and similar runs that hit a post-stream-truncation empty stop now continue to a real completion instead of ending with no final edits, improving pass@3 robustness."
+        ],
+        "regression_risks": [
+          "A model that legitimately returns an empty stop (rare/degenerate) will receive up to 3 extra nudges before the run ends; bounded so it cannot loop infinitely and adds at most a few turns.",
+          "Popping the empty assistant turn relies on it being the last context message; guarded by identity check so it is a no-op if the context was replaced, in which case only the nudge is injected.",
+          "Slight increase in tokens/turns for runs that previously ended empty; these were already failing, so expected value is positive."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke",
+          "re-run terminal-bench-write-compressor pass@3: if it remains 0/3 with the run still ending on an empty stop and no /app/data.comp, the mechanism is falsified",
+          "re-run terminal-bench-make-mips-interpreter pass@3 to confirm no regression on the previously passing repeats"
+        ],
+        "analysis_tags": [
+          "empty-response-recovery",
+          "completion-state-detection",
+          "stream-truncation",
+          "agent-loop-stopping",
+          "cross-task-pattern"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.6444444444444444,
+        "candidate_score": 0.6666666666666666,
+        "delta": 0.022222222222222254,
+        "partial_candidate_score": 0.6666666666666666,
+        "partial_delta": 0.022222222222222254,
+        "fail_to_pass": [
+          "terminal-bench-gcode-to-text",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-write-compressor"
+        ],
+        "pass_to_fail": [
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-headless-terminal",
+          "terminal-bench-raman-fitting"
+        ],
+        "improved_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-configure-git-webserver",
+          "terminal-bench-gcode-to-text",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-write-compressor"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-headless-terminal",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-raman-fitting"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/mnt/public/users/xieweichu/rsibench/runs/formal-terminal-claude-opus-4-8-meta-same-pi-docker-16w-full-18-direct-g5-tr3-te3-20260820T181108Z/cells/terminal/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/records/round-01"
+    },
+    {
+      "candidate_id": "round-02",
+      "status": "accepted",
+      "reason": "direct_full_training_improved",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "bash-default-timeout-hang-recovery-01",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_TOOL_RUNTIME",
+        "compound_modules": [],
+        "files": [
+          "packages/coding-agent/src/core/tools/bash.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "/app/pi-source-evidence/references/99ef1db034bb9450-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/e2f33d7834a779e2-training-failures.json",
+          "task=terminal-bench-qemu-alpine-ssh; failure_repeat=0; action=a single unbounded bash command blocks (assistant->toolResult execution gap ~418s) with no timeout while other bash calls stayed <=120s; verifier=harbor AgentTimeoutError after 900s, reward 0.0; pass_repeat=1,2 (max single command ~130s)",
+          "task=terminal-bench-build-cython-ext; failure_repeat=0; action=action_02/action_03 'git clone ... https://github.com/SPOCKnots/pyknotid.git' to an unreachable host with no timeout blocks ~394s (only 5 tool calls / 5605 tokens before the run dies); verifier=harbor AgentTimeoutError after 900s, reward 0.0; pass_repeat=none (repeats 1,2 avoided the hang by manually wrapping network fetches in `timeout 60/90/120`)",
+          "training_mean_reward=0.666667",
+          "failed_or_partial_trajectories=16"
+        ],
+        "root_cause": "packages/coding-agent/src/core/tools/bash.ts executes model commands with no default timeout: when the model omits `timeout`, the raw `undefined` is passed to ops.exec so the child process can block indefinitely. A single stuck command (unreachable network clone, command waiting on stdin, hung build) therefore consumes the whole agent execution budget and the run terminates with AgentTimeoutError, producing reward 0 with no chance for the model to observe the stall and recover.",
+        "mechanism": "Introduce DEFAULT_TIMEOUT_SECONDS=300 and apply it in the bash tool's execute path as `effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS`, which is passed to ops.exec (the local-shell backend already enforces the timeout by killing the process tree and throwing `timeout:<n>`). When the default limit fires, the timeout observation is augmented with guidance telling the model to re-run with an explicit larger `timeout` if the command legitimately needs more time, or to fix/bound the stuck command. Explicit user-supplied timeouts are unchanged; the schema and tool description are updated so the model's expectations match the new default. This turns a fatal run-level AgentTimeoutError into a bounded, recoverable, model-visible tool timeout.",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The earliest causal break is in tool execution: the command runs unbounded and the run dies before the model can act. Module guidance for PI_SRC_TOOL_RUNTIME explicitly covers bash execution and timeout, and lists bash.ts as an owned file; the desired-capability list names deadline-aware turn control and tool recovery. The default consumer of the new default (ops.exec call) is in the same file and on the default RSIBench task-agent path (mechanism-evidence confirms native bash is the invoked tool, custom_tools_registered=[]). It is not an observation-presentation issue (the result was never produced) nor an agent-loop stopping issue (the loop never regains control).",
+        "predicted_fixes": [
+          "terminal-bench-qemu-alpine-ssh repeat_0: the ~418s hanging command is cut at 300s, returning a 'Command timed out after 300 seconds' observation with ~600s of budget left so the model can bound/replace the command instead of the run dying at 900s; raises pass@3 robustness for this task (already 2/3).",
+          "terminal-bench-build-cython-ext repeat_0: the ~394s git-clone hang is cut at 300s, giving the model the same recovery the passing repeats performed manually (switch to a mirror / add explicit timeout), moving the timeout repeat off a guaranteed 0.",
+          "Generally: any single command that blocks longer than 300s now yields a recoverable tool error instead of a fatal AgentTimeoutError, reducing timeout-caused zeros across the split."
+        ],
+        "regression_risks": [
+          "A legitimate single command that needs more than 300s would now time out; measured max legitimate single-command duration in passing training runs is 185s, so the 300s ceiling leaves >=115s headroom and no observed passing trajectory is threatened.",
+          "The augmented timeout guidance text lengthens the timeout error message slightly; the existing tools.test.ts assertion uses substring/regex matching ('Command timed out after 5 seconds' and the truncation footer), which still holds.",
+          "Interactive/long-lived foreground commands (e.g. dev servers) started without an explicit timeout would be capped at 300s; the model/user can pass an explicit larger timeout, and this path is not exercised by the RSIBench acceptance split."
+        ],
+        "targeted_checks": [
+          "tools",
+          "mutation-queue",
+          "re-run terminal-bench-qemu-alpine-ssh pass@3: if repeat_0 still dies with AgentTimeoutError and no 300s tool-timeout observation appears, the mechanism is falsified",
+          "re-run terminal-bench-build-cython-ext pass@3: confirm the repeat_0 git-clone hang now surfaces as a 300s tool timeout with remaining budget rather than a run-level timeout",
+          "re-run currently-passing timeout-adjacent tasks (adaptive-rejection-sampler, make-mips-interpreter, gcode-to-text, tune-mjcf) pass@3 to confirm no legitimate command (<=185s) is prematurely killed"
+        ],
+        "analysis_tags": [
+          "bash-default-timeout",
+          "tool-recovery",
+          "deadline-aware",
+          "hang-mitigation",
+          "agent-timeout",
+          "cross-task-pattern",
+          "tool-runtime"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.6666666666666666,
+        "candidate_score": 0.7333333333333333,
+        "delta": 0.06666666666666665,
+        "partial_candidate_score": 0.7333333333333333,
+        "partial_delta": 0.06666666666666665,
+        "fail_to_pass": [
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-headless-terminal"
+        ],
+        "pass_to_fail": [
+          "terminal-bench-gcode-to-text",
+          "terminal-bench-model-extraction-relu-logits"
+        ],
+        "improved_tasks": [
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-headless-terminal",
+          "terminal-bench-make-mips-interpreter"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-configure-git-webserver",
+          "terminal-bench-gcode-to-text",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-write-compressor"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/mnt/public/users/xieweichu/rsibench/runs/formal-terminal-claude-opus-4-8-meta-same-pi-docker-16w-full-18-direct-g5-tr3-te3-20260820T181108Z/cells/terminal/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/records/round-02"
+    },
+    {
+      "candidate_id": "meta-agent-smoke",
+      "status": "rejected",
+      "reason": "qualification_passed",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "meta-agent-smoke-qual-1",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/stream-fn.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "controller qualification: prove edit, protocol, build, and smoke"
+        ],
+        "root_cause": "Qualification smoke task: no causal defect is being repaired. The controller requires a single harmless source comment to validate the recursive source-edit, protocol, build, and smoke path end to end.",
+        "mechanism": "Insert exactly one source comment immediately before the defaultStreamFn declaration in packages/agent/src/stream-fn.ts. This produces a real cumulative Git diff without altering runtime behavior.",
+        "evidence_basis": "runtime_failure",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The qualification_task explicitly names packages/agent/src/stream-fn.ts under primary_module PI_SRC_AGENT_LOOP and specifies the exact comment and location. No other component is appropriate for this smoke check.",
+        "predicted_fixes": [
+          "Controller local build succeeds with the inserted comment.",
+          "Controller smoke passes, confirming the recursive source-edit path is operational."
+        ],
+        "regression_risks": [
+          "None: a comment-only insertion cannot change runtime behavior; the edit is discarded after validation."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke"
+        ],
+        "analysis_tags": [
+          "qualification-smoke",
+          "comment-only",
+          "discard-after-validation"
+        ]
+      },
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "partial_candidate_score": null,
+        "partial_delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": [],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/mnt/public/users/xieweichu/rsibench/runs/formal-terminal-claude-opus-4-8-meta-same-pi-docker-16w-full-18-direct-g5-tr3-te3-20260820T181108Z/cells/terminal/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/records/meta-agent-smoke"
+    }
+  ],
+  "active_attempts_since_last_accept": [
+    "meta-agent-smoke"
+  ],
+  "prompt_policy": {
+    "performance_attempts": 0,
+    "performance_rejections": 0,
+    "blocked_after_no_lift": false,
+    "rejected_change_ids": [],
+    "required_action": "prompt_remains_eligible_with_causal_evidence"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "change_id": "anthropic-stream-idle-watchdog-01",
+  "layer": "agent_core_source",
+  "primary_module": "PI_SRC_PROVIDER_RUNTIME",
+  "compound_modules": [],
+  "files": [
+    "packages/ai/src/api/anthropic-messages.ts"
+  ],
+  "requires_rebuild": true,
+  "failure_evidence": [
+    "task=terminal-bench-write-compressor; failure_repeat=2; action=assistant turns ~7,8,10,11 each consumed ~180-300s of wall-clock while the Anthropic SSE stream stalled/truncated (msg8 emitted an empty message; a truncated stream yielded 'Anthropic stream ended before message_stop'), so in ~873s the agent produced only an ls and a single byte-count and never wrote the compressor; verifier=harbor AgentTimeoutError at the 900s deadline, task_reward=0.0; pass_repeat=0 (repeats that streamed without multi-minute stalls finished well under budget)",
+    "task=terminal-bench-qemu-alpine-ssh; failure_repeat=2; action=turn stream was iterated with no idle bound while long tool-result and generation gaps (tool gap sum ~509s, max ~100s) accumulated with no early abort/reclaim; verifier=agent_timeout at 900s, task_reward=0.0; pass_repeat=0 (a faster-streaming repeat completed ~279k tokens within budget)",
+    "task=terminal-bench-gcode-to-text; failure_repeat=2; action=generation gaps summed ~617s (max ~96s) with the Anthropic stream loop having no idle watchdog to detect a wedged connection and hand control back for retry; verifier=agent_timeout at 900s, task_reward=0.0; pass_repeat=0 (a repeat with normal streaming cadence completed)"
+  ],
+  "root_cause": "packages/ai/src/api/anthropic-messages.ts iterates the raw SSE response body with reader.read() and has no idle/stall timeout. The Anthropic SDK request timeout only covers time-to-headers, not mid-stream silence. A connection that goes silent after headers (dead socket, wedged upstream) blocks the turn indefinitely until the overall agent deadline, converting a transient provider stall into a fatal AgentTimeoutError with reward 0. The OpenAI/Codex provider paths already guard against this; the Anthropic path did not, so the default model path used in TRAIN was unprotected.",
+  "mechanism": "Add a stream idle watchdog to the Anthropic stream() function that mirrors the existing OpenAI implementation: resolveStreamIdleTimeoutMs (default 300000ms, override via PI_STREAM_IDLE_TIMEOUT_MS, 0 disables) and createStreamIdleWatchdog build an AbortController-backed timer. The watchdog signal is combined with the caller signal via combineAbortSignals and passed to both retryProviderRequest and the SDK requestOptions. iterateSseMessages/iterateAnthropicEvents take an onActivity callback invoked after every reader.read() chunk (text/thinking/tool deltas and Anthropic keep-alive ping events), which calls idle.reset() to re-arm the timer, so healthy generation never trips it. If no bytes arrive for the window the timer aborts the in-flight request; the catch block distinguishes idle-abort (idle.signal.aborted, and not caller-aborted) and sets stopReason='error' with a message containing 'stream idle timeout'/'timeout'/'stalled', which isRetryableAssistantError matches, so AgentSession's auto-retry re-issues the turn. Consecutive idle retries scale the window 1x/1.6x/2x; a clean turn resets the counter and cleans up timers.",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "rollback_and_pivot",
+  "why_this_component": "The agent_timeout failures are wall-clock/liveness failures, and the only place an unbounded wait can silently consume the entire budget on the default claude path is the provider stream loop. anthropic-messages.ts is the exact module the experiment's model streams through, and it is the sole major provider lacking the idle guard that openai-completions.ts and openai-codex-responses.ts already carry, making it a genuine parity gap and latent unbounded-wait bug rather than a task-reasoning issue. Fixing it here is general (helps any Anthropic task hit by a stalled stream) and cannot regress healthy runs because the timer resets on every SSE chunk.",
+  "predicted_fixes": [
+    "terminal-bench-write-compressor: a stalled/truncated Anthropic stream that previously burned ~180-300s per wedged turn is aborted at the idle window and retried, reclaiming budget so the agent can finish writing the compressor before the 900s deadline",
+    "terminal-bench-qemu-alpine-ssh: a wedged mid-stream connection is converted from a fatal 900s hang into an early retryable error, giving the agent remaining budget to complete the SSH/QEMU setup",
+    "terminal-bench-gcode-to-text: a silent stream stall is detected and retried instead of consuming the whole deadline, reducing agent_timeout occurrences on repeats that would otherwise wedge"
+  ],
+  "regression_risks": [
+    "If a legitimate large-context request (e.g. make-mips ~1.5M tokens) has a very long time-to-first-token, the watchdog armed before the request could abort a healthy call; mitigated by using the same proven 300s default as the shipped OpenAI paths (well above observed TTFT) and env override PI_STREAM_IDLE_TIMEOUT_MS",
+    "A provider that omits keep-alive pings during long server-side thinking could look idle; mitigated because Anthropic emits periodic ping events and any content delta resets the timer, and 300s is far larger than observed healthy inter-event gaps (<~100s)",
+    "Combining abort signals and adding cleanup on both success and error paths slightly changes control flow; mitigated by resetting the consecutive-timeout counter on clean completion and idempotent cleanup so behavior is unchanged when no stall occurs"
+  ],
+  "targeted_checks": [
+    "Confirmed isRetryableAssistantError's RETRYABLE_PROVIDER_ERROR_PATTERN matches 'timeout' (and 'stalled' text is benign), so the idle error is classified retryable and NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN does not match it",
+    "Confirmed AgentSession._willRetryAfterAgentEnd/_isRetryableError re-runs the turn on a retryable stream error, so a tripped watchdog reclaims budget instead of ending the run",
+    "Verified the watchdog resets on every reader.read() chunk including ping events, so healthy streaming (continuous deltas) never trips it; timer cleanup happens on both done and error paths",
+    "Verified combineAbortSignals, getProviderEnvValue, and ProviderEnv are available/imported in anthropic-messages.ts and that caller-abort is still distinguished from idle-abort via options.signal.aborted"
+  ],
+  "analysis_tags": [
+    "agent_timeout",
+    "provider_runtime",
+    "anthropic_streaming",
+    "idle_watchdog",
+    "unbounded_wait",
+    "provider_parity",
+    "retryable_error",
+    "budget_reclaim"
+  ]
+}

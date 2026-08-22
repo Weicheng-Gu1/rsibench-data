@@ -1,0 +1,78 @@
+diff --git a/packages/coding-agent/src/core/tools/bash.ts b/packages/coding-agent/src/core/tools/bash.ts
+index 1c245cb..1a1c211 100644
+--- a/packages/coding-agent/src/core/tools/bash.ts
++++ b/packages/coding-agent/src/core/tools/bash.ts
+@@ -24,6 +24,21 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult
+ const MAX_TIMEOUT_MS = 2_147_483_647;
+ const MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000;
+ 
++/**
++ * Default wall-clock ceiling (in seconds) applied when the model does not
++ * pass an explicit `timeout`. Without a bound, a single command that blocks
++ * forever (an unreachable network fetch, a command awaiting interactive
++ * stdin, a runaway build) silently consumes the entire agent execution
++ * budget and the whole run dies with AgentTimeoutError before any recovery
++ * is possible. The ceiling is chosen well above the longest legitimate
++ * single command observed in practice (~185s) but below the point where a
++ * hang would exhaust a typical multi-minute budget, so a stuck command is
++ * turned into a recoverable, model-visible timeout instead of a fatal
++ * run-level timeout. A model that needs longer can always pass an explicit
++ * larger `timeout`.
++ */
++const DEFAULT_TIMEOUT_SECONDS = 300;
++
+ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
+ 	if (timeout === undefined) return undefined;
+ 	if (!Number.isFinite(timeout) || timeout <= 0) {
+@@ -39,7 +54,11 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
+ 
+ const bashSchema = Type.Object({
+ 	command: Type.String({ description: "Bash command to execute" }),
+-	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
++	timeout: Type.Optional(
++		Type.Number({
++			description: `Timeout in seconds. Defaults to ${DEFAULT_TIMEOUT_SECONDS}s if omitted; pass a larger value for commands that legitimately need more time.`,
++		}),
++	),
+ });
+ 
+ export type BashToolInput = Static<typeof bashSchema>;
+@@ -324,7 +343,7 @@ export function createBashToolDefinition(
+ 	return {
+ 		name: "bash",
+ 		label: "bash",
+-		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
++		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Commands time out after ${DEFAULT_TIMEOUT_SECONDS}s by default to prevent a stuck command from consuming the whole run; pass an explicit timeout (in seconds) for commands that need longer.`,
+ 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
+ 		promptGuidelines: exposeSessionEnvironment
+ 			? ["Inspect PI_* environment variables for current model and session details."]
+@@ -337,6 +356,7 @@ export function createBashToolDefinition(
+ 			onUpdate?,
+ 			ctx?,
+ 		) {
++			const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS;
+ 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
+ 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx);
+ 			const output = new OutputAccumulator({ tempFilePrefix: "pi-bash" });
+@@ -429,7 +449,7 @@ export function createBashToolDefinition(
+ 					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
+ 						onData: handleData,
+ 						signal,
+-						timeout,
++						timeout: effectiveTimeout,
+ 						env: spawnContext.env,
+ 					});
+ 					exitCode = result.exitCode;
+@@ -441,7 +461,11 @@ export function createBashToolDefinition(
+ 					}
+ 					if (err instanceof Error && err.message.startsWith("timeout:")) {
+ 						const timeoutSecs = err.message.split(":")[1];
+-						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`));
++						const usedDefault = timeout === undefined;
++						const guidance = usedDefault
++							? ` (default limit). If this command legitimately needs longer, re-run it with an explicit larger \`timeout\`; otherwise the command is stuck (e.g. unreachable network or waiting on stdin) and should be changed or bounded (e.g. wrap it in \`timeout\`, add \`</dev/null\`, or run it in the background).`
++							: "";
++						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds${guidance}`));
+ 					}
+ 					throw err;
+ 				}
