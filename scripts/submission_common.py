@@ -29,6 +29,23 @@ IDENTITY_KEYS = {
     "submitted_by_github",
 }
 
+EDITABLE_SURFACE_CONTRACT = {
+    "prompt": "prompt",
+    "agent-loop": "agent-loop",
+    "tool-runtime": "tool-runtime",
+    "observation": "observation",
+    "context": "context",
+    "compaction": "compaction",
+    "skills-skill-loader": "skills,skill-loader",
+    "hooks": "hooks",
+}
+COGNITIVE_CONTROLLER_CONTRACT = {
+    "findings-only": ("direct", ("findings",)),
+    "targets-only": ("direct", ("targets",)),
+    "review-only": ("direct", ("review",)),
+    "causal-full": ("causal", ("findings", "targets", "review")),
+}
+
 
 def read_json(path: Path) -> dict[str, Any]:
     try:
@@ -113,6 +130,38 @@ def validate_manifest(root: Path, path: Path, *, enforce_current_protocol: bool)
             raise ValueError(
                 f"{path}: test_state_policy must be endpoints or all-accepted"
             )
+
+    study = manifest.get("study")
+    if study is not None:
+        if not isinstance(study, dict):
+            raise ValueError(f"{path}: study must be an object")
+        family = study.get("family")
+        condition = study.get("condition")
+        if bench != "terminal" or harness != "pi":
+            raise ValueError(f"{path}: study submissions are restricted to terminal + pi")
+        if family == "editable_surface":
+            expected_surface = EDITABLE_SURFACE_CONTRACT.get(str(condition))
+            if expected_surface is None:
+                raise ValueError(f"{path}: unknown editable-surface condition {condition!r}")
+            if protocol.get("edit_surface") != expected_surface:
+                raise ValueError(
+                    f"{path}: {condition} requires edit_surface={expected_surface!r}"
+                )
+        elif family == "cognitive_controller":
+            expected = COGNITIVE_CONTROLLER_CONTRACT.get(str(condition))
+            if expected is None:
+                raise ValueError(f"{path}: unknown cognitive-controller condition {condition!r}")
+            strategy, components = expected
+            supplied = protocol.get("causal_components")
+            if not isinstance(supplied, list):
+                supplied = []
+            if protocol.get("meta_strategy") != strategy or tuple(supplied) != components:
+                raise ValueError(
+                    f"{path}: {condition} requires meta_strategy={strategy!r} "
+                    f"and causal_components={list(components)!r}"
+                )
+        else:
+            raise ValueError(f"{path}: unknown study family {family!r}")
 
     artifacts = manifest["artifacts"]
     if not isinstance(artifacts, list) or not artifacts:
@@ -384,6 +433,8 @@ def trusted_site_record(
     endpoint_usage = score.get("held_out_test_usage")
     if isinstance(endpoint_usage, dict):
         record["held_out_test_usage"] = endpoint_usage
+    if isinstance(manifest.get("study"), dict):
+        record["study"] = manifest["study"]
     return record
 
 

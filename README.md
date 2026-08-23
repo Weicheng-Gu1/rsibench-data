@@ -94,6 +94,21 @@ complete scores, token/cost accounting, and raw task-agent trajectories.
 Component scores are absolute `Only(Mi)` scores; new records do not calculate
 `Only(Mi)-A0` or `A*-Only(Mi)`.
 
+RSIBench also accepts two families of independently executed Terminal + Pi
+ablation studies. These are not keep-one reconstructions of a main run:
+
+- `editable_surface`: `prompt`, `agent-loop`, `tool-runtime`, `observation`,
+  `context`, `compaction`, `skills-skill-loader`, or `hooks`;
+- `cognitive_controller`: `findings-only`, `targets-only`, `review-only`, or
+  `causal-full`.
+
+The publisher derives `trajectory-manifest.json.study` from the resolved run
+configuration. Pull-request validation checks the label against the actual
+`edit_surface`, `meta_strategy`, and `causal_components`; submitters cannot
+label a Full-18 run as a single-surface result. Main runs and every study
+condition have independent submission sequences, while all immutable attempts
+remain visible in the trusted feed.
+
 Current formal submissions require only A0 and A_last held-out scores at avg@3.
 Every accepted generation and changed-module keep-one layer may be submitted
 later as a new immutable supplemental submission. Pull-request validation
@@ -119,6 +134,6 @@ The immutable run manifest and raw artifacts remain the source of truth.
 `leaderboard/submissions.json` contains only runs with a merge-generated GitHub
 identity receipt and is the trusted feed consumed by the RSIBench Submit page.
 Every merged run remains in that feed. Repeated submissions for the same
-`(bench, model, harness)` cell receive deterministic `submission_sequence` and
+`(bench, model, harness, study family, study condition)` cell receive deterministic `submission_sequence` and
 `resubmission_increment` values; later submissions never overwrite earlier
 candidate histories or scores.

@@ -26,6 +26,8 @@ FIELDS = (
     "bench",
     "model",
     "harness",
+    "study_family",
+    "study_condition",
     "run_id",
     "backend",
     "source_commit",
@@ -163,6 +165,8 @@ def row_from_manifest(
         "bench": manifest["bench"],
         "model": manifest["model"],
         "harness": manifest["harness"],
+        "study_family": (manifest.get("study") or {}).get("family"),
+        "study_condition": (manifest.get("study") or {}).get("condition"),
         "run_id": manifest["source_run_id"],
         "backend": manifest.get("backend"),
         "source_commit": manifest.get("source_commit"),
@@ -240,9 +244,15 @@ def main() -> int:
             str(row["run_id"]),
         )
     )
-    submissions_per_cell: dict[tuple[str, str], int] = {}
+    submissions_per_cell: dict[tuple[str, str, str, str], int] = {}
     for record in site_records:
-        key = (str(record["benchmark"]), str(record["configuration"]))
+        study = record.get("study") or {}
+        key = (
+            str(record["benchmark"]),
+            str(record["configuration"]),
+            str(study.get("family") or "main"),
+            str(study.get("condition") or "main"),
+        )
         sequence = submissions_per_cell.get(key, 0) + 1
         submissions_per_cell[key] = sequence
         record["submission_sequence"] = sequence

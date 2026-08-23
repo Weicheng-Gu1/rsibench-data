@@ -54,6 +54,10 @@ def add_manifest(
     inject_identity: bool = False,
     run_id: str = "formal-terminal-glm-5-2-pi-test",
     bench: str = "terminal",
+    study: dict[str, str] | None = None,
+    edit_surface: str = "full-18",
+    meta_strategy: str = "direct",
+    causal_components: list[str] | None = None,
 ) -> Path:
     artifact = repo / f"trajectories/{bench}-glm-5-2-pi" / run_id
     artifact.mkdir(parents=True)
@@ -73,6 +77,9 @@ def add_manifest(
             "test_rollouts_per_task": 3,
             "test_state_policy": "all-accepted" if bench == "terminal" else "endpoints",
             "test_evaluation_order": [0, 1],
+            "edit_surface": edit_surface,
+            "meta_strategy": meta_strategy,
+            "causal_components": causal_components or [],
         },
         "score_and_cost": {"V_test_A0": 0.1, "V_test_AT": 0.2, "delta_test": 0.1},
         "candidate_history": {
@@ -103,6 +110,8 @@ def add_manifest(
             "method": "keep_one_changed_module",
             "layers": {},
         }
+    if study is not None:
+        manifest["study"] = study
     if inject_identity:
         manifest["github_login"] = "forged-user"
     path = artifact / "trajectory-manifest.json"
@@ -144,6 +153,60 @@ class SubmissionProtocolTest(unittest.TestCase):
         )
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("submitter-controlled identity is forbidden", completed.stdout + completed.stderr)
+
+    def test_editable_surface_study_is_verified_and_published(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        manifest = add_manifest(
+            self.repo,
+            run_id="formal-terminal-glm-5-2-pi-prompt-ablation",
+            study={"family": "editable_surface", "condition": "prompt"},
+            edit_surface="prompt",
+        )
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "prompt ablation")
+        head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        validated = subprocess.run(
+            [sys.executable, str(self.repo / "scripts/validate_submission.py"),
+             "--repo-root", str(self.repo), "--base", base, "--head", head],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(validated.returncode, 0, validated.stderr)
+        recorded = subprocess.run(
+            [sys.executable, str(self.repo / "scripts/record_submission.py"),
+             "--repo-root", str(self.repo), "--repository", "owner/data",
+             "--github-login", "alice", "--github-user-id", "1",
+             "--pull-request", "21", "--merge-commit", head,
+             "--base-commit", base, "--head-commit", head,
+             "--merged-at", "2026-08-23T12:00:00Z", "--merged-by-github", "maintainer"],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        subprocess.run(
+            [sys.executable, str(self.repo / "scripts/build_leaderboard.py")], check=True
+        )
+        feed = json.loads((self.repo / "leaderboard/submissions.json").read_text())
+        self.assertEqual(feed["results"][0]["study"], {
+            "family": "editable_surface", "condition": "prompt"
+        })
+        self.assertTrue(manifest.is_file())
+
+    def test_study_contract_rejects_mismatched_surface(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        add_manifest(
+            self.repo,
+            study={"family": "editable_surface", "condition": "agent-loop"},
+            edit_surface="prompt",
+        )
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "mismatched ablation")
+        head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        completed = subprocess.run(
+            [sys.executable, str(self.repo / "scripts/validate_submission.py"),
+             "--repo-root", str(self.repo), "--base", base, "--head", head],
+            text=True, capture_output=True,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("requires edit_surface='agent-loop'", completed.stdout + completed.stderr)
 
     def test_public_price_registry_covers_scored_models(self) -> None:
         prices = json.loads(
