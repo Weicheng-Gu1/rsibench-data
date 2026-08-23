@@ -1,0 +1,169 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 3a12506..934c6f8 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -24,6 +24,40 @@ import type {
+ 
+ export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
+ 
++/**
++ * How much of the remaining wall-clock budget must be left before the loop
++ * injects its "finalize now" steering message. Bounded so short budgets still
++ * get a finalize window and long budgets don't inject prematurely.
++ */
++function resolveFinalizeWindowMs(maxDurationMs: number): number {
++	return Math.min(120_000, Math.max(30_000, Math.floor(maxDurationMs * 0.2)));
++}
++
++/**
++ * Build the steering message the loop injects when the wall-clock budget is
++ * nearly exhausted. It tells the model to stop exploring and persist/verify a
++ * solution artifact, which is the difference between a pass and a timeout in
++ * the observed training rollouts.
++ */
++function createFinalizeSteeringMessage(elapsedMs: number, maxDurationMs: number): AgentMessage {
++	const elapsedSec = Math.round(elapsedMs / 1000);
++	const remainingSec = Math.max(1, Math.round((maxDurationMs - elapsedMs) / 1000));
++	const budgetSec = Math.round(maxDurationMs / 1000);
++	return {
++		role: "user",
++		content: [
++			{
++				type: "text",
++				text:
++					`You have used about ${elapsedSec}s of your ~${budgetSec}s wall-clock budget; roughly ${remainingSec}s remain. ` +
++					`Stop exploring and stop starting long-running commands. Write the required solution file(s) to disk now ` +
++					`and run a final verification so a correct answer is saved before the budget runs out.`,
++			},
++		],
++		timestamp: Date.now(),
++	};
++}
++
+ /**
+  * Start an agent loop with a new prompt message.
+  * The prompt is added to the context and events are emitted for it.
+@@ -166,6 +200,14 @@ async function runLoop(
+ 	// Check for steering messages at start (user may have typed while waiting)
+ 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
+ 
++	// Wall-clock deadline steering. Track elapsed time from run start and inject a
++	// single "finalize now" message once the remaining budget drops below the
++	// finalize window. Advisory only: the loop never exits early because of this.
++	const startedAtMs = Date.now();
++	const maxDurationMs = initialConfig.maxDurationMs;
++	const finalizeWindowMs = maxDurationMs && maxDurationMs > 0 ? resolveFinalizeWindowMs(maxDurationMs) : 0;
++	let finalizeInjected = false;
++
+ 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
+ 	while (true) {
+ 		let hasMoreToolCalls = true;
+@@ -189,6 +231,21 @@ async function runLoop(
+ 				pendingMessages = [];
+ 			}
+ 
++			// Inject a "finalize now" steering message once the wall-clock budget is
++			// nearly exhausted, so the model checkpoints its solution before a hard
++			// external deadline kills the run mid-work.
++			if (maxDurationMs && !finalizeInjected) {
++				const remainingMs = maxDurationMs - (Date.now() - startedAtMs);
++				if (remainingMs <= finalizeWindowMs) {
++					finalizeInjected = true;
++					const steeringMessage = createFinalizeSteeringMessage(Date.now() - startedAtMs, maxDurationMs);
++					await emit({ type: "message_start", message: steeringMessage });
++					await emit({ type: "message_end", message: steeringMessage });
++					currentContext.messages.push(steeringMessage);
++					newMessages.push(steeringMessage);
++				}
++			}
++
+ 			// Stream assistant response
+ 			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
+ 			newMessages.push(message);
+diff --git a/packages/agent/src/agent.ts b/packages/agent/src/agent.ts
+index 147edc8..6eed773 100644
+--- a/packages/agent/src/agent.ts
++++ b/packages/agent/src/agent.ts
+@@ -57,6 +57,22 @@ const DEFAULT_MODEL = {
+ 	maxTokens: 0,
+ } satisfies Model<any>;
+ 
++/**
++ * Default wall-clock budget (15 minutes) after which the agent loop injects a
++ * "finalize now" steering message so a run checkpoints its solution before an
++ * external deadline kills it mid-work. Overridable via `PI_AGENT_MAX_DURATION_MS`;
++ * a value <= 0 disables deadline steering.
++ */
++const DEFAULT_AGENT_MAX_DURATION_MS = 15 * 60 * 1000;
++
++function resolveAgentMaxDurationMs(env: Record<string, string | undefined> | undefined): number | undefined {
++	const raw = env?.PI_AGENT_MAX_DURATION_MS;
++	if (raw === undefined || raw === "") return DEFAULT_AGENT_MAX_DURATION_MS;
++	const parsed = Number(raw);
++	if (!Number.isFinite(parsed)) return DEFAULT_AGENT_MAX_DURATION_MS;
++	return parsed <= 0 ? undefined : parsed;
++}
++
+ type MutableAgentState = Omit<AgentState, "isStreaming" | "streamingMessage" | "pendingToolCalls" | "errorMessage"> & {
+ 	isStreaming: boolean;
+ 	streamingMessage?: AgentMessage;
+@@ -118,6 +134,8 @@ export interface AgentOptions {
+ 	transport?: Transport;
+ 	maxRetryDelayMs?: number;
+ 	toolExecution?: ToolExecutionMode;
++	/** Wall-clock budget (ms) for the run; drives the agent-loop "finalize now" steering message. */
++	maxDurationMs?: number;
+ }
+ 
+ class PendingMessageQueue {
+@@ -206,6 +224,8 @@ export class Agent {
+ 	public maxRetryDelayMs?: number;
+ 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
+ 	public toolExecution: ToolExecutionMode;
++	/** Wall-clock budget (ms) for the run; drives the agent-loop "finalize now" steering message. */
++	public maxDurationMs?: number;
+ 
+ 	constructor(options: AgentOptions) {
+ 		// Older compiled consumers may omit options or streamFn even though the current API requires them.
+@@ -228,6 +248,9 @@ export class Agent {
+ 		this.transport = runtimeOptions.transport ?? "auto";
+ 		this.maxRetryDelayMs = runtimeOptions.maxRetryDelayMs;
+ 		this.toolExecution = runtimeOptions.toolExecution ?? "parallel";
++		this.maxDurationMs =
++			runtimeOptions.maxDurationMs ??
++			resolveAgentMaxDurationMs(typeof process !== "undefined" ? process.env : undefined);
+ 	}
+ 
+ 	/**
+@@ -443,6 +466,7 @@ export class Agent {
+ 			thinkingBudgets: this.thinkingBudgets,
+ 			maxRetryDelayMs: this.maxRetryDelayMs,
+ 			toolExecution: this.toolExecution,
++			maxDurationMs: this.maxDurationMs,
+ 			beforeToolCall: this.beforeToolCall,
+ 			afterToolCall: this.afterToolCall,
+ 			prepareNextTurn:
+diff --git a/packages/agent/src/types.ts b/packages/agent/src/types.ts
+index 52f3489..fe5cfcb 100644
+--- a/packages/agent/src/types.ts
++++ b/packages/agent/src/types.ts
+@@ -251,6 +251,19 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
+ 	 */
+ 	getFollowUpMessages?: () => Promise<AgentMessage[]>;
+ 
++	/**
++	 * Wall-clock budget for this run, in milliseconds.
++	 *
++	 * When set, the loop tracks elapsed wall-clock time since the run started and,
++	 * once the remaining budget drops below a small finalize window, injects a
++	 * steering message telling the model to stop exploring and write/verify its
++	 * solution artifact before the budget expires. The injection is advisory: it
++	 * never stops the run early, so a task that is mid-solution can keep working.
++	 *
++	 * Undefined (or <= 0) disables deadline steering entirely.
++	 */
++	maxDurationMs?: number;
++
+ 	/**
+ 	 * Tool execution mode.
+ 	 * - "sequential": execute tool calls one by one

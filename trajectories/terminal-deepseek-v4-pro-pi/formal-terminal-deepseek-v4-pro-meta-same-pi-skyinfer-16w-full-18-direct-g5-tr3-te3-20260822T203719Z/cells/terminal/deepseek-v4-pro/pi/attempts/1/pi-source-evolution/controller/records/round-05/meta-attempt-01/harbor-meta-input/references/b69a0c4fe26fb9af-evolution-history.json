@@ -1,0 +1,461 @@
+{
+  "schema_version": 2,
+  "purpose": "Falsifiable cross-round memory without controller-defined semantic mechanism classes. The Meta-agent owns causal interpretation.",
+  "attempts": [
+    {
+      "candidate_id": "round-01",
+      "status": "accepted",
+      "reason": "direct_full_training_improved",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-01-bash-default-timeout",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_TOOL_RUNTIME",
+        "compound_modules": [],
+        "files": [
+          "packages/coding-agent/src/core/tools/bash.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=terminal-bench-headless-terminal; failure_repeat=2; action=bash tool call ran a heredoc python script that did pty.fork()+os.execv('/bin/bash',['-i']) then os.waitpid(pid,0) after SIGTERM, so the command never returned and no toolResult followed (trajectory ends mid-tool-call at /app/pi-source-evidence/references/f7407aa99116695b-trajectory.jsonl); verifier=ModuleNotFoundError: No module named 'headless_terminal' -> 0/7 tests passed; pass_repeat=0",
+          "task=terminal-bench-qemu-alpine-ssh; failure_repeat=0; action=final bash call ran an expect script spawning qemu-system-x86_64 with no outer timeout and never returned (trajectory ends mid-tool-call at /app/pi-source-evidence/references/2520c0f864eb639c-trajectory.jsonl); verifier=test_sshpass sshpass connection failed -> 0/1 passed; pass_repeat=1",
+          "/app/pi-source-evidence/references/920aea205e5f0449-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/e282246560e5a08b-training-failures.json"
+        ],
+        "root_cause": "Local bash execution had no default timeout (timeout param optional, 'no default timeout'). When the model issued a command that never exits, createLocalBashOperations.exec awaited it forever, so the agent loop received no tool result and the whole run was killed by the 900s harness timeout with no chance to recover or finalize.",
+        "mechanism": "Add DEFAULT_BASH_TIMEOUT_SECONDS=300 applied inside createLocalBashOperations.exec when the model omits an explicit timeout. On expiry the detached process tree is killed and exec throws 'timeout:300', which the bash tool converts into 'Command timed out after 300 seconds' with partial output, so the model observes the failure and can retry or finalize. Explicit timeouts (e.g. 600s apt-get, 300s tests) still take precedence, and the tool/schema descriptions now surface the default.",
+        "evidence_basis": "within_task_contrast",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The defect is timeout enforcement in the bash tool's local execution backend (packages/coding-agent/src/core/tools/bash.ts), owned by PI_SRC_TOOL_RUNTIME; timeout/execution-error behavior is exactly that module's boundary. createLocalBashOperations is the single local-execution path reached by the default RSIBench task run, so one change covers the agent tool path and AgentSession.executeBash.",
+        "predicted_fixes": [
+          "terminal-bench-headless-terminal repeat_2: the hung pty command is killed at 300s and the model sees 'Command timed out after 300 seconds', letting it write headless_terminal.py (the implementation was already planned) and flip 0/7 toward pass.",
+          "terminal-bench-qemu-alpine-ssh repeat_0: the hung expect/qemu command is killed at 300s with ~600s left to recover, flipping 0/1 toward pass.",
+          "Other rollouts that end mid-tool-call (tune-mjcf, gcode-to-text) get an explicit timeout signal instead of silent wall-clock death, giving the model a chance to finalize or change approach."
+        ],
+        "regression_risks": [
+          "A legitimate no-timeout command exceeding 300s would now be killed; training shows no passing rollout runs a no-timeout bash command above ~70s and the model consistently sets explicit timeouts for known-long operations, so this is a residual risk for unseen long commands only, which the model can retry with an explicit timeout after seeing the error.",
+          "The model could loop re-issuing the same long command without a timeout, but this is bounded by the harness wall clock and is no worse than the current silent hang."
+        ],
+        "targeted_checks": [
+          "tools",
+          "Rerun terminal-bench-headless-terminal pass@3: the previously hung command must now produce a 'Command timed out after 300 seconds' tool result (not a missing toolResult) and the agent must continue to a solution."
+        ],
+        "analysis_tags": [
+          "default-bash-timeout",
+          "hung-tool-recovery",
+          "agent-timeout",
+          "tool-runtime",
+          "within-task-contrast"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.5333333333333333,
+        "candidate_score": 0.6,
+        "delta": 0.06666666666666665,
+        "partial_candidate_score": 0.6,
+        "partial_delta": 0.06666666666666665,
+        "fail_to_pass": [
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-tune-mjcf"
+        ],
+        "pass_to_fail": [
+          "terminal-bench-adaptive-rejection-sampler"
+        ],
+        "improved_tasks": [
+          "terminal-bench-headless-terminal",
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-tune-mjcf"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-largest-eigenval"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/tmp/rsibench-release-20260822/runs/formal-terminal-deepseek-v4-pro-meta-same-pi-skyinfer-16w-full-18-direct-g5-tr3-te3-20260822T203719Z/cells/terminal/deepseek-v4-pro/pi/attempts/1/pi-source-evolution/controller/records/round-01"
+    },
+    {
+      "candidate_id": "round-02",
+      "status": "rejected",
+      "reason": "direct_full_training_severe_task_regression",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "pi-src-provider-runtime-cap-reasoning-off-max-tokens",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_PROVIDER_RUNTIME",
+        "compound_modules": [],
+        "files": [
+          "packages/ai/src/api/openai-completions.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "17 of 18 reward-0 TRAIN trajectories fail with wall-clock AgentTimeoutError (900.0s; 1800.0s for terminal-bench-make-mips-interpreter) per dc9b7d730d20a643-training-failures.json, spanning model-extraction-relu-logits, tune-mjcf, make-mips-interpreter, largest-eigenval, qemu-alpine-ssh, gcode-to-text, adaptive-rejection-sampler, and raman-fitting.",
+          "terminal-bench-adaptive-rejection-sampler repeat_00 (93208044de60fe98-trajectory.jsonl) contains an assistant message with usage.reasoning=53337 tokens whose timestamp-to-next-tool-result gap is 725.2s, proving a single reasoning turn can exhaust the 900s budget.",
+          "All trajectories record thinking_level_change to off and PI_REASONING_LEVEL=off, yet assistant messages still carry type:thinking blocks and usage.reasoning (largest-eigenval pass 468650d42ddb82ca-trajectory.jsonl accumulated 34702 reasoning tokens and still hit AgentTimeoutError after 888.8s), showing the off level is not honored on the wire for this openai-completions model."
+        ],
+        "root_cause": "When thinkingLevel is off, the agent loop maps reasoning to undefined, but openai-completions streamSimple/buildBaseOptions still passes the model's full advertised maxTokens (384000 for deepseek-v4-pro) as max_completion_tokens. A reasoning model behind an OpenAI-compatible gateway that does not honor the disabled-thinking signal then generates an unbounded chain-of-thought trace (up to 53k reasoning tokens in one turn, ~725s), consuming the wall-clock deadline before the task is solved.",
+        "mechanism": "In packages/ai/src/api/openai-completions.ts streamSimple, when reasoningEffort is undefined (thinking off), no explicit caller maxTokens is set, and the model advertises maxTokens above a new DEFAULT_MAX_TOKENS_WITHOUT_REASONING constant (16384), cap the serialized completion budget to min(base.maxTokens, 16384). This bounds per-turn reasoning+content for reasoning-capable models only when thinking is off, matching the 16384 non-reasoning default already used by provider-composer.ts, while leaving explicit caller caps and reasoning-on requests untouched.",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The defect is at the provider wire boundary: a correct off decision from the agent loop is transformed into an unbounded max_completion_tokens request. That is exactly PI_SRC_PROVIDER_RUNTIME scope (owned file packages/ai/src/api/openai-completions.ts), not the agent loop (which already emits reasoning=undefined) and not prompt guidance.",
+        "predicted_fixes": [
+          "Prevents single-turn reasoning runaways (53k tokens / 725s) so the model is forced to emit a tool call or answer within a bounded budget, keeping the agent progressing instead of dying at AgentTimeoutError.",
+          "Bounds every off-reasoning turn across all timed-out tasks, giving the agent substantially more effective turns inside the 900s deadline and increasing the chance the solution file is written before the harness kills it."
+        ],
+        "regression_risks": [
+          "A single >16384-token output produced with thinking off (e.g. one very large file emitted in a single tool call) would be truncated; the agent can still write large files in chunks or via bash heredoc.",
+          "Rare non-reasoning models whose catalog maxTokens exceeds 16384 would also be capped when thinking is off, a minor tightening of the default output budget."
+        ],
+        "targeted_checks": [
+          "Mandatory clean rebuild + CLI smoke via candidate_check.py --agent pi --source /app/pi-source-candidate: npm ci --ignore-scripts --offline, npm run build:offline, and cli.js --version all PASS; attestation written and verified at /logs/agent/candidate-self-check.json (sha256 bed4ff53010183611e1a69c2ac5acc80e9e48a86ecf8ed9fab6ce32d3337320c).",
+          "Provider-request fixture: assert max_completion_tokens is capped to 16384 when reasoning is off for a model with maxTokens=384000, and unchanged when an explicit options.maxTokens or a reasoning level is supplied."
+        ],
+        "analysis_tags": [
+          "reasoning-budget",
+          "wall-clock-timeout",
+          "openai-completions",
+          "deepseek",
+          "max_completion_tokens",
+          "provider-runtime",
+          "AgentTimeoutError"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.6,
+        "candidate_score": 0.4666666666666667,
+        "delta": -0.1333333333333333,
+        "partial_candidate_score": 0.4666666666666667,
+        "partial_delta": -0.1333333333333333,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "improved_tasks": [
+          "terminal-bench-make-mips-interpreter"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-configure-git-webserver",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-regex-log",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_severe_task_regression",
+        "baseline_score": 0.6,
+        "candidate_score": 0.4666666666666667,
+        "delta": -0.1333333333333333,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "improved_tasks": [
+          "terminal-bench-make-mips-interpreter"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-configure-git-webserver",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-regex-log",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "candidate_changed_files": [
+          "packages/ai/src/api/openai-completions.ts"
+        ],
+        "validation_failure": null,
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/tmp/rsibench-release-20260822/runs/formal-terminal-deepseek-v4-pro-meta-same-pi-skyinfer-16w-full-18-direct-g5-tr3-te3-20260822T203719Z/cells/terminal/deepseek-v4-pro/pi/attempts/1/pi-source-evolution/controller/records/round-02"
+    },
+    {
+      "candidate_id": "round-03",
+      "status": "rejected",
+      "reason": "direct_full_training_no_improvement",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-03-agent-loop-deadline-aware-turn-control",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [
+          "PI_SRC_HARNESS_RUNTIME"
+        ],
+        "files": [
+          "packages/agent/src/agent-loop.ts",
+          "packages/agent/src/agent.ts",
+          "packages/agent/src/types.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=terminal-bench-largest-eigenval; failure_repeat=2; action=action_42 (bash python microbenchmark timing scipy.linalg.eig/dgeev) — the run spent its entire wall-clock budget on LAPACK/ctypes/scipy microbenchmarking and never wrote /app/eigen.py; verifier=AgentTimeoutError after 900.0s with reward 0.0 and no solution artifact; pass_repeat=0",
+          "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=0; action=action_04 (DEBIAN_FRONTEND=noninteractive apt-get install r-base with timeout 600) consumed ~600s of the 900s budget and the subsequent ars.R write/test never completed; verifier=AgentTimeoutError after 900.0s with reward 0.0; pass_repeat=none"
+        ],
+        "root_cause": "The agent loop has no awareness of elapsed wall-clock time or remaining budget, so failing rollouts keep exploring (largest-eigenval repeat_02 microbenchmarked ctypes/LAPACK for the whole run; adaptive-rejection-sampler repeats spent ~600s installing R) until the external harness hard-kills the process at its deadline with no solution file on disk. The within-task contrast shows the causal difference: largest-eigenval passing repeats wrote /app/eigen.py relatively early (repeat_00 action_90, repeat_01 action_36) and kept iterating, so the verifier passed even though the agent still timed out; the failing repeat never persisted any solution artifact.",
+        "mechanism": "Add wall-clock deadline steering to the shared agent loop. runLoop records startedAtMs and, when AgentLoopConfig.maxDurationMs is set, injects a single 'finalize now' user message once the remaining budget falls below a finalize window of min(120s, 20% of the budget). The message tells the model to stop exploring, stop starting long-running commands, and write/verify the required solution file(s) before the budget runs out. It is advisory only (the loop never exits early). maxDurationMs is threaded Agent -> AgentLoopConfig and defaults from PI_AGENT_MAX_DURATION_MS (default 15 minutes; <=0 disables). This is turn control, not token capping, so it cannot truncate tool-call output.",
+        "evidence_basis": "within_task_contrast",
+        "prior_attempt_disposition": "rollback_and_pivot",
+        "why_this_component": "The defect is turn sequencing, not the provider wire boundary. packages/agent/src/agent-loop.ts is the single place that orders turns and already has the steering-injection machinery (getSteeringMessages/shouldStopAfterTurn), so it is the correct owner for deadline-aware turn control. It is reached by the default RSIBench path: createAgentSession (packages/coding-agent/src/core/sdk.ts) constructs Agent (packages/agent/src/agent.ts), whose createLoopConfig feeds runLoop. The default-path consumer (Agent constructor reading PI_AGENT_MAX_DURATION_MS and passing maxDurationMs into AgentLoopConfig) is included in this same cumulative diff.",
+        "predicted_fixes": [
+          "terminal-bench-largest-eigenval repeat_2: at ~13 minutes the injected 'finalize now' message redirects the run away from LAPACK/ctypes microbenchmarking so it writes /app/eigen.py and flips reward 0.0 to 1.0 before the 900s kill.",
+          "terminal-bench-adaptive-rejection-sampler (0/3): after the ~600s R install the finalize nudge prompts writing/running /app/ars.R instead of further exploration, turning at least one repeat from timeout to pass.",
+          "Other timeout rollouts (gcode-to-text, raman-fitting, model-extraction-relu-logits) get a checkpoint nudge so a best-effort solution artifact is on disk before the harness deadline, increasing the chance of a pass even if the agent still times out."
+        ],
+        "regression_risks": [
+          "The advisory message could distract a run that was about to finish near the deadline; it is one-shot and advisory, so the model can ignore it if it is mid-critical-work.",
+          "The 15-minute default is shorter than make-mips-interpreter's 1800s budget, so the nudge fires early there; it never stops the run, and PI_AGENT_MAX_DURATION_MS can raise the budget.",
+          "Interactive Pi sessions longer than 15 minutes also receive the nudge; it is harmless advice and can be disabled via PI_AGENT_MAX_DURATION_MS=0."
+        ],
+        "targeted_checks": [
+          "Mandatory clean rebuild + CLI smoke via candidate_check.py --agent pi --source /app/pi-source-candidate (npm ci --ignore-scripts --offline, npm run build:offline, cli.js --version) all PASS; attestation written and verified at /logs/agent/candidate-self-check.json.",
+          "Loop-level fixture: runLoop with a small maxDurationMs injects exactly one finalize steering message and does not exit the loop early.",
+          "Re-run terminal-bench-largest-eigenval pass@3: the failing repeat_02 must now write /app/eigen.py before the 900s timeout."
+        ],
+        "analysis_tags": [
+          "deadline-aware-turn-control",
+          "wall-clock-budget",
+          "agent-loop",
+          "finalize-steering",
+          "within-task-contrast",
+          "timeout-recovery"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.6,
+        "candidate_score": 0.6,
+        "delta": 0.0,
+        "partial_candidate_score": 0.6,
+        "partial_delta": 0.0,
+        "fail_to_pass": [
+          "terminal-bench-model-extraction-relu-logits"
+        ],
+        "pass_to_fail": [],
+        "improved_tasks": [
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-write-compressor"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_no_improvement",
+        "baseline_score": 0.6,
+        "candidate_score": 0.6,
+        "delta": 0.0,
+        "fail_to_pass": [
+          "terminal-bench-model-extraction-relu-logits"
+        ],
+        "pass_to_fail": [],
+        "improved_tasks": [
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-write-compressor"
+        ],
+        "candidate_changed_files": [
+          "packages/agent/src/agent-loop.ts",
+          "packages/agent/src/agent.ts",
+          "packages/agent/src/types.ts"
+        ],
+        "validation_failure": null,
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/tmp/rsibench-release-20260822/runs/formal-terminal-deepseek-v4-pro-meta-same-pi-skyinfer-16w-full-18-direct-g5-tr3-te3-20260822T203719Z/cells/terminal/deepseek-v4-pro/pi/attempts/1/pi-source-evolution/controller/records/round-03"
+    },
+    {
+      "candidate_id": "round-04",
+      "status": "rejected",
+      "reason": "direct_full_training_insufficient_task_improvements",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "openai-completions-serialize-off-reasoning",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_PROVIDER_RUNTIME",
+        "compound_modules": [],
+        "files": [
+          "packages/ai/src/api/openai-completions.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "aa4aad46cdd77a97-trajectory.jsonl (tune-mjcf repeat_1): model_change to deepseek-v4-pro-ppio-anthropic with thinking_level_change='off', yet all 26 assistant messages still carry type='thinking' with thinkingSignature='reasoning_content' and usage.reasoning>0.",
+          "f0e0555cc9b77ead-trajectory.jsonl (adaptive-rejection-sampler repeat_2) and 4e3be871247f376a-trajectory.jsonl (model-extraction-relu-logits repeat_0) show the same pattern: reasoning_content emitted on every turn despite thinkingLevel=off, provider=rsibench, api=openai-completions.",
+          "training-failures.json/opportunity-index: 18 reward-0 trajectories dominated by AgentTimeoutError at 900s; model-extraction repeat_0 burned 892.6s across 9 turns with 138,760 reasoning chars, confirming reasoning token generation is the wall-clock bottleneck that prevents persisting solutions."
+        ],
+        "root_cause": "The experiment model (deepseek-v4-pro-ppio-anthropic, provider rsibench) is reasoning-capable and routed through openai-completions with detectCompat() yielding thinkingFormat='openai' and supportsReasoningEffort=true. When thinkingLevel=off, streamSimple sets reasoningEffort=undefined, and the generic OpenAI-style branch in buildParams only serializes reasoning_effort when model.thinkingLevelMap.off is a string. This model has no string off mapping (off is undefined), so no disable signal is written to the wire and the gateway defaults to reasoning on, producing massive reasoning token generation that exhausts the deadline.",
+        "mechanism": "In openai-completions.ts buildParams, change the off-branch to serialize a disable signal whenever reasoning is off and supportsReasoningEffort, guarded by off !== null to preserve 'off unsupported' models: reasoning_effort = model.thinkingLevelMap?.off ?? 'none'. This exactly mirrors the already-correct openai-responses.ts off-handling.",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "openai-completions.ts buildParams is the sole serializer of reasoning_effort for the experiment model's openai-completions route, and it is the one divergent path: openai-responses.ts already sends effort = off ?? 'none' when off is requested, proving the intended behavior. No other component can emit the disable signal for this api route.",
+        "predicted_fixes": [
+          "Disables reasoning token generation for the rsibench experiment model, cutting the dominant wall-clock cost (e.g., 138k reasoning chars / 892s in model-extraction repeat_0) and letting trajectories reach and persist a verifiable solution before the 900s/1800s deadline.",
+          "Converts reasoning-bound reward-0 timeouts into successful or partial passes across adaptive-rejection-sampler, tune-mjcf, model-extraction-relu-logits, largest-eigenval, qemu-alpine-ssh, and make-mips-interpreter."
+        ],
+        "regression_risks": [
+          "Models that advertise supportsReasoningEffort=true but reject reasoning_effort='none' could return an error; the off !== null guard keeps explicitly 'off unsupported' models unchanged, and for models that ignore 'none' the extra field is a no-op.",
+          "Reasoning-capable models where thinkingLevelMap.off === null are unaffected because the guard preserves the existing skip behavior.",
+          "No change to z.ai/deepseek/openrouter/chat-template/qwen-chat-template/string-thinking off-branches, so their existing serialization (thinking.type='disabled', etc.) is untouched."
+        ],
+        "targeted_checks": [
+          "Unit test: captureSimpleParams on a reasoning model with no thinkingLevelMap and reasoning=undefined must now yield reasoning_effort='none'.",
+          "Unit test: a reasoning model with thinkingLevelMap.off=null and reasoning=undefined must still omit reasoning_effort (unchanged).",
+          "Existing off-tests for z.ai GLM-5.2, kimi-k2.6 (deepseek format), openrouter, chat-template, and qwen-chat-template must still pass (separate branches).",
+          "Frozen candidate checker: npm-ci-offline + build:offline (tsgo type-check) + pi-cli-smoke all pass (verified: passed=true)."
+        ],
+        "analysis_tags": [
+          "reasoning",
+          "openai-completions",
+          "thinking-off",
+          "reasoning_effort",
+          "timeout",
+          "wall-clock",
+          "provider-runtime",
+          "serialization"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.6,
+        "candidate_score": 0.6,
+        "delta": 0.0,
+        "partial_candidate_score": 0.6,
+        "partial_delta": 0.0,
+        "fail_to_pass": [
+          "terminal-bench-model-extraction-relu-logits"
+        ],
+        "pass_to_fail": [],
+        "improved_tasks": [
+          "terminal-bench-model-extraction-relu-logits"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-write-compressor"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_insufficient_task_improvements",
+        "baseline_score": 0.6,
+        "candidate_score": 0.6,
+        "delta": 0.0,
+        "fail_to_pass": [
+          "terminal-bench-model-extraction-relu-logits"
+        ],
+        "pass_to_fail": [],
+        "improved_tasks": [
+          "terminal-bench-model-extraction-relu-logits"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-write-compressor"
+        ],
+        "candidate_changed_files": [
+          "packages/ai/src/api/openai-completions.ts"
+        ],
+        "validation_failure": null,
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/tmp/rsibench-release-20260822/runs/formal-terminal-deepseek-v4-pro-meta-same-pi-skyinfer-16w-full-18-direct-g5-tr3-te3-20260822T203719Z/cells/terminal/deepseek-v4-pro/pi/attempts/1/pi-source-evolution/controller/records/round-04"
+    },
+    {
+      "candidate_id": "meta-agent-smoke",
+      "status": "rejected",
+      "reason": "qualification_passed",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "meta-agent-smoke-qualification",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/stream-fn.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=qualification; failure_repeat=1; action=prove the complete recursive source-edit path by inserting exactly one harmless source comment immediately before the defaultStreamFn declaration in packages/agent/src/stream-fn.ts; verifier=controller qualification gate (edit, protocol, build, and smoke); pass_repeat=none"
+        ],
+        "root_cause": "This is a Meta-agent smoke qualification with an empty counterfactual-findings artifact; the only required behavior is to demonstrate the complete recursive source-edit path via a single harmless source comment in the owned PI_SRC_AGENT_LOOP file packages/agent/src/stream-fn.ts.",
+        "mechanism": "Insert exactly one harmless source comment line (// RSIBench meta-agent smoke qualification edit) immediately before the defaultStreamFn declaration. The change has no runtime or model-visible effect; it only proves that the candidate worktree edit, build, and smoke pipeline operates end-to-end.",
+        "evidence_basis": "runtime_failure",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The qualification task explicitly designates packages/agent/src/stream-fn.ts under the PI_SRC_AGENT_LOOP module as the required edit location, and the defaultStreamFn declaration is the exact anchor before which the comment must be placed. This file is reachable in the default build path and the comment is inert, satisfying the prove-edit-and-build requirement without altering any behavior.",
+        "predicted_fixes": [
+          "The recursive source-edit path is proven: the candidate worktree holds a real cumulative Git diff, the offline build succeeds, and the Pi CLI smoke reports version 0.82.1."
+        ],
+        "regression_risks": [
+          "None: the inserted comment is inert and introduces no runtime, build, or observable behavior change."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke"
+        ],
+        "analysis_tags": [
+          "smoke-qualification",
+          "discard-after-validation",
+          "no-task-findings"
+        ]
+      },
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "partial_candidate_score": null,
+        "partial_delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": [],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/tmp/rsibench-release-20260822/runs/formal-terminal-deepseek-v4-pro-meta-same-pi-skyinfer-16w-full-18-direct-g5-tr3-te3-20260822T203719Z/cells/terminal/deepseek-v4-pro/pi/attempts/1/pi-source-evolution/controller/records/meta-agent-smoke"
+    }
+  ],
+  "active_attempts_since_last_accept": [
+    "round-02",
+    "round-03",
+    "round-04",
+    "meta-agent-smoke"
+  ],
+  "prompt_policy": {
+    "performance_attempts": 0,
+    "performance_rejections": 0,
+    "blocked_after_no_lift": false,
+    "rejected_change_ids": [],
+    "required_action": "prompt_remains_eligible_with_causal_evidence"
+  }
+}

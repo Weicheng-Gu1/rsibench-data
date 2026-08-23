@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "change_id": "openai-completions-serialize-off-reasoning",
+  "layer": "agent_core_source",
+  "primary_module": "PI_SRC_PROVIDER_RUNTIME",
+  "compound_modules": [],
+  "files": [
+    "packages/ai/src/api/openai-completions.ts"
+  ],
+  "requires_rebuild": true,
+  "failure_evidence": [
+    "aa4aad46cdd77a97-trajectory.jsonl (tune-mjcf repeat_1): model_change to deepseek-v4-pro-ppio-anthropic with thinking_level_change='off', yet all 26 assistant messages still carry type='thinking' with thinkingSignature='reasoning_content' and usage.reasoning>0.",
+    "f0e0555cc9b77ead-trajectory.jsonl (adaptive-rejection-sampler repeat_2) and 4e3be871247f376a-trajectory.jsonl (model-extraction-relu-logits repeat_0) show the same pattern: reasoning_content emitted on every turn despite thinkingLevel=off, provider=rsibench, api=openai-completions.",
+    "training-failures.json/opportunity-index: 18 reward-0 trajectories dominated by AgentTimeoutError at 900s; model-extraction repeat_0 burned 892.6s across 9 turns with 138,760 reasoning chars, confirming reasoning token generation is the wall-clock bottleneck that prevents persisting solutions."
+  ],
+  "root_cause": "The experiment model (deepseek-v4-pro-ppio-anthropic, provider rsibench) is reasoning-capable and routed through openai-completions with detectCompat() yielding thinkingFormat='openai' and supportsReasoningEffort=true. When thinkingLevel=off, streamSimple sets reasoningEffort=undefined, and the generic OpenAI-style branch in buildParams only serializes reasoning_effort when model.thinkingLevelMap.off is a string. This model has no string off mapping (off is undefined), so no disable signal is written to the wire and the gateway defaults to reasoning on, producing massive reasoning token generation that exhausts the deadline.",
+  "mechanism": "In openai-completions.ts buildParams, change the off-branch to serialize a disable signal whenever reasoning is off and supportsReasoningEffort, guarded by off !== null to preserve 'off unsupported' models: reasoning_effort = model.thinkingLevelMap?.off ?? 'none'. This exactly mirrors the already-correct openai-responses.ts off-handling.",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "new_direction",
+  "why_this_component": "openai-completions.ts buildParams is the sole serializer of reasoning_effort for the experiment model's openai-completions route, and it is the one divergent path: openai-responses.ts already sends effort = off ?? 'none' when off is requested, proving the intended behavior. No other component can emit the disable signal for this api route.",
+  "predicted_fixes": [
+    "Disables reasoning token generation for the rsibench experiment model, cutting the dominant wall-clock cost (e.g., 138k reasoning chars / 892s in model-extraction repeat_0) and letting trajectories reach and persist a verifiable solution before the 900s/1800s deadline.",
+    "Converts reasoning-bound reward-0 timeouts into successful or partial passes across adaptive-rejection-sampler, tune-mjcf, model-extraction-relu-logits, largest-eigenval, qemu-alpine-ssh, and make-mips-interpreter."
+  ],
+  "regression_risks": [
+    "Models that advertise supportsReasoningEffort=true but reject reasoning_effort='none' could return an error; the off !== null guard keeps explicitly 'off unsupported' models unchanged, and for models that ignore 'none' the extra field is a no-op.",
+    "Reasoning-capable models where thinkingLevelMap.off === null are unaffected because the guard preserves the existing skip behavior.",
+    "No change to z.ai/deepseek/openrouter/chat-template/qwen-chat-template/string-thinking off-branches, so their existing serialization (thinking.type='disabled', etc.) is untouched."
+  ],
+  "targeted_checks": [
+    "Unit test: captureSimpleParams on a reasoning model with no thinkingLevelMap and reasoning=undefined must now yield reasoning_effort='none'.",
+    "Unit test: a reasoning model with thinkingLevelMap.off=null and reasoning=undefined must still omit reasoning_effort (unchanged).",
+    "Existing off-tests for z.ai GLM-5.2, kimi-k2.6 (deepseek format), openrouter, chat-template, and qwen-chat-template must still pass (separate branches).",
+    "Frozen candidate checker: npm-ci-offline + build:offline (tsgo type-check) + pi-cli-smoke all pass (verified: passed=true)."
+  ],
+  "analysis_tags": [
+    "reasoning",
+    "openai-completions",
+    "thinking-off",
+    "reasoning_effort",
+    "timeout",
+    "wall-clock",
+    "provider-runtime",
+    "serialization"
+  ]
+}

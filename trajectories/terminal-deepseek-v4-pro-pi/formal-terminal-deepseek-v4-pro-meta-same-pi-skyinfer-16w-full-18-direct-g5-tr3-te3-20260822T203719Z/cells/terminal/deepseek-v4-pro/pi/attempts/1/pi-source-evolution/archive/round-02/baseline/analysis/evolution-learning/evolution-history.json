@@ -1,0 +1,150 @@
+{
+  "schema_version": 2,
+  "purpose": "Falsifiable cross-round memory without controller-defined semantic mechanism classes. The Meta-agent owns causal interpretation.",
+  "attempts": [
+    {
+      "candidate_id": "round-01",
+      "status": "accepted",
+      "reason": "direct_full_training_improved",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-01-bash-default-timeout",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_TOOL_RUNTIME",
+        "compound_modules": [],
+        "files": [
+          "packages/coding-agent/src/core/tools/bash.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=terminal-bench-headless-terminal; failure_repeat=2; action=bash tool call ran a heredoc python script that did pty.fork()+os.execv('/bin/bash',['-i']) then os.waitpid(pid,0) after SIGTERM, so the command never returned and no toolResult followed (trajectory ends mid-tool-call at /app/pi-source-evidence/references/f7407aa99116695b-trajectory.jsonl); verifier=ModuleNotFoundError: No module named 'headless_terminal' -> 0/7 tests passed; pass_repeat=0",
+          "task=terminal-bench-qemu-alpine-ssh; failure_repeat=0; action=final bash call ran an expect script spawning qemu-system-x86_64 with no outer timeout and never returned (trajectory ends mid-tool-call at /app/pi-source-evidence/references/2520c0f864eb639c-trajectory.jsonl); verifier=test_sshpass sshpass connection failed -> 0/1 passed; pass_repeat=1",
+          "/app/pi-source-evidence/references/920aea205e5f0449-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/e282246560e5a08b-training-failures.json"
+        ],
+        "root_cause": "Local bash execution had no default timeout (timeout param optional, 'no default timeout'). When the model issued a command that never exits, createLocalBashOperations.exec awaited it forever, so the agent loop received no tool result and the whole run was killed by the 900s harness timeout with no chance to recover or finalize.",
+        "mechanism": "Add DEFAULT_BASH_TIMEOUT_SECONDS=300 applied inside createLocalBashOperations.exec when the model omits an explicit timeout. On expiry the detached process tree is killed and exec throws 'timeout:300', which the bash tool converts into 'Command timed out after 300 seconds' with partial output, so the model observes the failure and can retry or finalize. Explicit timeouts (e.g. 600s apt-get, 300s tests) still take precedence, and the tool/schema descriptions now surface the default.",
+        "evidence_basis": "within_task_contrast",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The defect is timeout enforcement in the bash tool's local execution backend (packages/coding-agent/src/core/tools/bash.ts), owned by PI_SRC_TOOL_RUNTIME; timeout/execution-error behavior is exactly that module's boundary. createLocalBashOperations is the single local-execution path reached by the default RSIBench task run, so one change covers the agent tool path and AgentSession.executeBash.",
+        "predicted_fixes": [
+          "terminal-bench-headless-terminal repeat_2: the hung pty command is killed at 300s and the model sees 'Command timed out after 300 seconds', letting it write headless_terminal.py (the implementation was already planned) and flip 0/7 toward pass.",
+          "terminal-bench-qemu-alpine-ssh repeat_0: the hung expect/qemu command is killed at 300s with ~600s left to recover, flipping 0/1 toward pass.",
+          "Other rollouts that end mid-tool-call (tune-mjcf, gcode-to-text) get an explicit timeout signal instead of silent wall-clock death, giving the model a chance to finalize or change approach."
+        ],
+        "regression_risks": [
+          "A legitimate no-timeout command exceeding 300s would now be killed; training shows no passing rollout runs a no-timeout bash command above ~70s and the model consistently sets explicit timeouts for known-long operations, so this is a residual risk for unseen long commands only, which the model can retry with an explicit timeout after seeing the error.",
+          "The model could loop re-issuing the same long command without a timeout, but this is bounded by the harness wall clock and is no worse than the current silent hang."
+        ],
+        "targeted_checks": [
+          "tools",
+          "Rerun terminal-bench-headless-terminal pass@3: the previously hung command must now produce a 'Command timed out after 300 seconds' tool result (not a missing toolResult) and the agent must continue to a solution."
+        ],
+        "analysis_tags": [
+          "default-bash-timeout",
+          "hung-tool-recovery",
+          "agent-timeout",
+          "tool-runtime",
+          "within-task-contrast"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.5333333333333333,
+        "candidate_score": 0.6,
+        "delta": 0.06666666666666665,
+        "partial_candidate_score": 0.6,
+        "partial_delta": 0.06666666666666665,
+        "fail_to_pass": [
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-tune-mjcf"
+        ],
+        "pass_to_fail": [
+          "terminal-bench-adaptive-rejection-sampler"
+        ],
+        "improved_tasks": [
+          "terminal-bench-headless-terminal",
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-tune-mjcf"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-largest-eigenval"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/tmp/rsibench-release-20260822/runs/formal-terminal-deepseek-v4-pro-meta-same-pi-skyinfer-16w-full-18-direct-g5-tr3-te3-20260822T203719Z/cells/terminal/deepseek-v4-pro/pi/attempts/1/pi-source-evolution/controller/records/round-01"
+    },
+    {
+      "candidate_id": "meta-agent-smoke",
+      "status": "rejected",
+      "reason": "qualification_passed",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "meta-agent-smoke-qualification",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/stream-fn.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=qualification; failure_repeat=1; action=prove the complete recursive source-edit path by inserting exactly one harmless source comment immediately before the defaultStreamFn declaration in packages/agent/src/stream-fn.ts; verifier=controller qualification gate (edit, protocol, build, and smoke); pass_repeat=none"
+        ],
+        "root_cause": "This is a Meta-agent smoke qualification with an empty counterfactual-findings artifact; the only required behavior is to demonstrate the complete recursive source-edit path via a single harmless source comment in the owned PI_SRC_AGENT_LOOP file packages/agent/src/stream-fn.ts.",
+        "mechanism": "Insert exactly one harmless source comment line (// RSIBench meta-agent smoke qualification edit) immediately before the defaultStreamFn declaration. The change has no runtime or model-visible effect; it only proves that the candidate worktree edit, build, and smoke pipeline operates end-to-end.",
+        "evidence_basis": "runtime_failure",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The qualification task explicitly designates packages/agent/src/stream-fn.ts under the PI_SRC_AGENT_LOOP module as the required edit location, and the defaultStreamFn declaration is the exact anchor before which the comment must be placed. This file is reachable in the default build path and the comment is inert, satisfying the prove-edit-and-build requirement without altering any behavior.",
+        "predicted_fixes": [
+          "The recursive source-edit path is proven: the candidate worktree holds a real cumulative Git diff, the offline build succeeds, and the Pi CLI smoke reports version 0.82.1."
+        ],
+        "regression_risks": [
+          "None: the inserted comment is inert and introduces no runtime, build, or observable behavior change."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke"
+        ],
+        "analysis_tags": [
+          "smoke-qualification",
+          "discard-after-validation",
+          "no-task-findings"
+        ]
+      },
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "partial_candidate_score": null,
+        "partial_delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": [],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/tmp/rsibench-release-20260822/runs/formal-terminal-deepseek-v4-pro-meta-same-pi-skyinfer-16w-full-18-direct-g5-tr3-te3-20260822T203719Z/cells/terminal/deepseek-v4-pro/pi/attempts/1/pi-source-evolution/controller/records/meta-agent-smoke"
+    }
+  ],
+  "active_attempts_since_last_accept": [
+    "meta-agent-smoke"
+  ],
+  "prompt_policy": {
+    "performance_attempts": 0,
+    "performance_rejections": 0,
+    "blocked_after_no_lift": false,
+    "rejected_change_ids": [],
+    "required_action": "prompt_remains_eligible_with_causal_evidence"
+  }
+}

@@ -1,0 +1,10 @@
+Work directly in the current task repository. Inspect relevant source before
+editing, keep changes focused, and run visible validation before completion.
+
+Completion discipline: treat the task as done only when the required output
+file(s) exist at their exact required paths and pass the task's own validation.
+Write a best-effort version of each required file as soon as you have a
+plausible candidate, then refine and re-verify it in place; do not leave the
+deliverable unwritten while you explore. Bound exploration and
+microbenchmarking, and once a candidate meets the acceptance criteria, commit
+to it, verify it, and only then continue polishing.
