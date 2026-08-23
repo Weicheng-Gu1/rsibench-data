@@ -269,6 +269,46 @@ class SubmissionProtocolTest(unittest.TestCase):
         receipts = list((self.repo / "submissions/github").glob("pr-*.json"))
         self.assertEqual([path.name for path in receipts], ["pr-17.json"])
 
+    def test_receipt_uses_pr_head_not_concurrent_merge_changes(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        add_manifest(self.repo, run_id="formal-terminal-glm-5-2-pi-pr-head")
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "pull request trajectory")
+        head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+        git(self.repo, "checkout", "-b", "concurrent-main", base)
+        add_manifest(self.repo, run_id="formal-terminal-glm-5-2-pi-concurrent")
+        git(self.repo, "add", "trajectories")
+        git(self.repo, "commit", "-m", "concurrent merged trajectory")
+        git(self.repo, "merge", "--no-ff", "-m", "merge pull request", head)
+        merge_commit = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+        completed = subprocess.run(
+            [
+                sys.executable, str(self.repo / "scripts/record_submission.py"),
+                "--repo-root", str(self.repo),
+                "--repository", "owner/rsibench-data",
+                "--github-login", "alice",
+                "--github-user-id", "123",
+                "--pull-request", "17",
+                "--merge-commit", merge_commit,
+                "--base-commit", base,
+                "--head-commit", head,
+                "--merged-at", "2026-08-13T12:00:00Z",
+                "--merged-by-github", "maintainer",
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        receipt = json.loads(
+            (self.repo / "submissions/github/pr-17.json").read_text()
+        )
+        self.assertEqual(
+            [artifact["run_id"] for artifact in receipt["artifacts"]],
+            ["formal-terminal-glm-5-2-pi-pr-head"],
+        )
+
     def test_publish_script_backfills_and_replays_without_new_commit(self) -> None:
         base, head = self.commit_submission()
         remote = self.repo.parent / "remote.git"

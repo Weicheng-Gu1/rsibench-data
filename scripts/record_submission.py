@@ -71,7 +71,7 @@ def main() -> int:
     else:
         diff = git(
             root, "diff", "--name-status", "--no-renames",
-            args.base_commit, args.merge_commit, "--", "trajectories",
+            args.base_commit, args.head_commit, "--", "trajectories",
         )
         for line in diff.splitlines():
             status, relative = line.split("\t", 1)
