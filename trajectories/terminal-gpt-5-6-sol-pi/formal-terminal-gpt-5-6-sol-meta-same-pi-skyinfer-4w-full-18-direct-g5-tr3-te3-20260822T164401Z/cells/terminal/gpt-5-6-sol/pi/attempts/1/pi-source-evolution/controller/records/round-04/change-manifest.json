@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "change_id": "verify-computed-result-stability",
+  "layer": "shared_resource",
+  "primary_module": "SHARED_SKILLS",
+  "compound_modules": [],
+  "files": [
+    ".pi/skills/verify-work/SKILL.md"
+  ],
+  "requires_rebuild": false,
+  "failure_evidence": [
+    "task=terminal-bench-raman-fitting; failure_repeat=0; action=action_15 wrote a structurally valid result after choosing the narrow 2570–2770 fit, including 2D offset 990.701861, and action_16 only checked JSON keys and finite numeric types; verifier=the rollout received failure because the selected numerical fit was not verifier-valid; pass_repeat=2 selected the broader 2500–2900 fit and action_18 wrote 2D offset 1239.090575, which passed"
+  ],
+  "root_cause": "The existing verify-work skill only requested a small relevant check, so the failing rollout treated schema validity and finite values as sufficient even though its fitted parameters changed materially across plausible fitting windows. It selected a narrow-window result without comparing candidates on a common domain or investigating the instability.",
+  "mechanism": "Expand the existing verification skill’s trigger to computed, fitted, decoded, and reverse-engineered outputs, then require agents to define the requested objective and domain, compare candidate interpretations using residuals or an independent check on a common domain, perturb a defensible modeling choice, and withhold commitment when requested values remain materially unstable.",
+  "evidence_basis": "within_task_contrast",
+  "prior_attempt_disposition": "improve_accepted",
+  "why_this_component": "SHARED_SKILLS is the correct layer because tool execution and observations were intact: the failing rollout successfully parsed data, ran multiple fits, wrote the file, and validated its structure. What was missing was a specialized, description-gated procedure for judging uncertain computed outputs. Extending the already loaded verify-work skill targets that judgment without imposing another unconditional system-prompt reminder or changing runtime mechanics.",
+  "predicted_fixes": [
+    "On terminal-bench-raman-fitting, the agent should notice the large 2D-offset variation across fit windows, avoid selecting the narrow 2570–2770 result solely from its in-window fit, and perform a common-domain or stability comparison before writing results.json.",
+    "On numerical fitting, decoding, and reverse-engineering tasks with multiple plausible interpretations, the agent should validate model selection rather than merely confirming output syntax.",
+    "On terminal-bench-gcode-to-text-like tasks, the expanded trigger and alternate-interpretation check should discourage committing an uncertain visual decoding without testing orientations or independent samples."
+  ],
+  "regression_risks": [
+    "The additional validation may consume time on computed tasks and could delay submission when evidence remains ambiguous.",
+    "An overly broad interpretation of material instability could cause unnecessary model exploration; the description limits loading to implementation verification and computed, fitted, decoded, or reverse-engineered results."
+  ],
+  "targeted_checks": [
+    "Re-run terminal-bench-raman-fitting and falsify the change if the agent still writes the narrow-window approximately 990.70 2D offset after observing the broader-window approximately 1239.09 candidate without a common-domain comparison.",
+    "Confirm an ordinary implementation task can still use verify-work for focused regression checks without invoking numerical model-selection steps.",
+    "Candidate self-check: python3 /app/rsibench-source-candidate-check.py --agent pi --source /app/pi-source-candidate --output /logs/agent/candidate-self-check.json completed with passed=true; offline install, build, and CLI smoke all passed."
+  ],
+  "analysis_tags": [
+    "SHARED_SKILLS",
+    "verification",
+    "numerical-stability",
+    "model-selection",
+    "within-task-contrast"
+  ]
+}

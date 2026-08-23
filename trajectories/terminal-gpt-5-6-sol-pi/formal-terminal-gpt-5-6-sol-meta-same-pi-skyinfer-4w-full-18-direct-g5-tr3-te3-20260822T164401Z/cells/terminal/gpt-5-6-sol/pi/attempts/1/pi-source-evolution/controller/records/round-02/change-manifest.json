@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "change_id": "preserve-validated-final-state",
+  "layer": "shared_resource",
+  "primary_module": "SHARED_PROMPT",
+  "compound_modules": [],
+  "files": [
+    ".pi/APPEND_SYSTEM.md"
+  ],
+  "requires_rebuild": false,
+  "failure_evidence": [
+    "In terminal-bench-configure-git-webserver repeat_00, action_10 completed the clone, commit, push, and HTTP check successfully and observed `hello world`; action_11 then deleted refs/heads/master and removed the deployed files before submission, destroying the state that had just satisfied the public workflow.",
+    "The same failed rollout explicitly left the repository reset while claiming the validated result, demonstrating that validation occurred against a different state from the state presented to the verifier.",
+    "Within the same task, a passing repeat established that a correctly configured, externally usable Git-over-SSH deployment can satisfy the verifier, so the failure is attributable to final-state handling rather than inability to implement the service."
+  ],
+  "root_cause": "The agent treated successful end-to-end test artifacts as disposable scaffolding and optimized for an assumed pristine initial state after proving success. It did not distinguish temporary client credentials and directories from server-side repository content and deployed files that constituted the observable required outcome, nor did it rerun the public-interface assertion against the exact post-cleanup state.",
+  "mechanism": "The appended default-path prompt activates whenever an end-to-end test succeeds and the agent considers cleanup, reset, migration, or replacement. It requires identifying which artifacts supplied the success evidence, preserving any that the request or checker may depend on, limiting cleanup to clearly temporary inputs, and rerunning the public-interface check after cleanup. At configure-git-webserver repeat_00 action_11, this would classify the master ref and deployed hello.html as validated observable state rather than disposable test data, preventing their deletion or forcing the resulting 404 to be detected and repaired before submission.",
+  "evidence_basis": "within_task_contrast",
+  "prior_attempt_disposition": "improve_accepted",
+  "why_this_component": "The defect is a missing cross-task completion discipline, not a broken loader or tool runtime: the model received commands, executed the full workflow successfully, and then deliberately destroyed the result. SHARED_PROMPT is unconditional and is therefore the correct owner for a concise guard at the common transition from successful validation to cleanup. The change extends the previously accepted end-to-end validation guidance without merely repeating it by specifying artifact preservation and post-cleanup validation.",
+  "predicted_fixes": [
+    "For terminal-bench-configure-git-webserver, after a successful push serves hello.html, the agent will preserve verifier-relevant repository and deployment state instead of deleting the master ref and web content, or it will detect the post-cleanup 404 and restore the working state before finishing.",
+    "For service and stateful configuration tasks generally, cleanup will remove temporary clients, keys, and scratch files without erasing the durable state that demonstrated the requested public behavior."
+  ],
+  "regression_risks": [
+    "The agent may retain unnecessary test data when a task explicitly requires a clean or empty final state.",
+    "Repeating a public-interface check after cleanup adds a small amount of execution time."
+  ],
+  "targeted_checks": [
+    "Replay terminal-bench-configure-git-webserver and verify that the final submitted state, not merely a pre-cleanup intermediate state, still serves the pushed hello.html through port 8080.",
+    "Falsification check: if the task explicitly requires an empty repository ready for a future first push and the verifier passes only with no branch or deployed content, confirm that the new guidance still permits that reset because the requested empty state outweighs preservation of test artifacts.",
+    "Confirm temporary SSH keys and client work directories can still be removed while the server-side hook, repository content, deployed content, and listeners remain functional.",
+    "Frozen candidate checker passed npm-ci-offline, build-offline, and pi-cli-smoke with no diagnostics."
+  ],
+  "analysis_tags": [
+    "shared_prompt",
+    "final_state_integrity",
+    "destructive_cleanup",
+    "post_cleanup_revalidation",
+    "stateful_services"
+  ]
+}
