@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "change_id": "round-03-agent-loop-deadline-aware-turn-control",
+  "layer": "agent_core_source",
+  "primary_module": "PI_SRC_AGENT_LOOP",
+  "compound_modules": [
+    "PI_SRC_HARNESS_RUNTIME"
+  ],
+  "files": [
+    "packages/agent/src/agent-loop.ts",
+    "packages/agent/src/agent.ts",
+    "packages/agent/src/types.ts"
+  ],
+  "requires_rebuild": true,
+  "failure_evidence": [
+    "task=terminal-bench-largest-eigenval; failure_repeat=2; action=action_42 (bash python microbenchmark timing scipy.linalg.eig/dgeev) — the run spent its entire wall-clock budget on LAPACK/ctypes/scipy microbenchmarking and never wrote /app/eigen.py; verifier=AgentTimeoutError after 900.0s with reward 0.0 and no solution artifact; pass_repeat=0",
+    "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=0; action=action_04 (DEBIAN_FRONTEND=noninteractive apt-get install r-base with timeout 600) consumed ~600s of the 900s budget and the subsequent ars.R write/test never completed; verifier=AgentTimeoutError after 900.0s with reward 0.0; pass_repeat=none"
+  ],
+  "root_cause": "The agent loop has no awareness of elapsed wall-clock time or remaining budget, so failing rollouts keep exploring (largest-eigenval repeat_02 microbenchmarked ctypes/LAPACK for the whole run; adaptive-rejection-sampler repeats spent ~600s installing R) until the external harness hard-kills the process at its deadline with no solution file on disk. The within-task contrast shows the causal difference: largest-eigenval passing repeats wrote /app/eigen.py relatively early (repeat_00 action_90, repeat_01 action_36) and kept iterating, so the verifier passed even though the agent still timed out; the failing repeat never persisted any solution artifact.",
+  "mechanism": "Add wall-clock deadline steering to the shared agent loop. runLoop records startedAtMs and, when AgentLoopConfig.maxDurationMs is set, injects a single 'finalize now' user message once the remaining budget falls below a finalize window of min(120s, 20% of the budget). The message tells the model to stop exploring, stop starting long-running commands, and write/verify the required solution file(s) before the budget runs out. It is advisory only (the loop never exits early). maxDurationMs is threaded Agent -> AgentLoopConfig and defaults from PI_AGENT_MAX_DURATION_MS (default 15 minutes; <=0 disables). This is turn control, not token capping, so it cannot truncate tool-call output.",
+  "evidence_basis": "within_task_contrast",
+  "prior_attempt_disposition": "rollback_and_pivot",
+  "why_this_component": "The defect is turn sequencing, not the provider wire boundary. packages/agent/src/agent-loop.ts is the single place that orders turns and already has the steering-injection machinery (getSteeringMessages/shouldStopAfterTurn), so it is the correct owner for deadline-aware turn control. It is reached by the default RSIBench path: createAgentSession (packages/coding-agent/src/core/sdk.ts) constructs Agent (packages/agent/src/agent.ts), whose createLoopConfig feeds runLoop. The default-path consumer (Agent constructor reading PI_AGENT_MAX_DURATION_MS and passing maxDurationMs into AgentLoopConfig) is included in this same cumulative diff.",
+  "predicted_fixes": [
+    "terminal-bench-largest-eigenval repeat_2: at ~13 minutes the injected 'finalize now' message redirects the run away from LAPACK/ctypes microbenchmarking so it writes /app/eigen.py and flips reward 0.0 to 1.0 before the 900s kill.",
+    "terminal-bench-adaptive-rejection-sampler (0/3): after the ~600s R install the finalize nudge prompts writing/running /app/ars.R instead of further exploration, turning at least one repeat from timeout to pass.",
+    "Other timeout rollouts (gcode-to-text, raman-fitting, model-extraction-relu-logits) get a checkpoint nudge so a best-effort solution artifact is on disk before the harness deadline, increasing the chance of a pass even if the agent still times out."
+  ],
+  "regression_risks": [
+    "The advisory message could distract a run that was about to finish near the deadline; it is one-shot and advisory, so the model can ignore it if it is mid-critical-work.",
+    "The 15-minute default is shorter than make-mips-interpreter's 1800s budget, so the nudge fires early there; it never stops the run, and PI_AGENT_MAX_DURATION_MS can raise the budget.",
+    "Interactive Pi sessions longer than 15 minutes also receive the nudge; it is harmless advice and can be disabled via PI_AGENT_MAX_DURATION_MS=0."
+  ],
+  "targeted_checks": [
+    "Mandatory clean rebuild + CLI smoke via candidate_check.py --agent pi --source /app/pi-source-candidate (npm ci --ignore-scripts --offline, npm run build:offline, cli.js --version) all PASS; attestation written and verified at /logs/agent/candidate-self-check.json.",
+    "Loop-level fixture: runLoop with a small maxDurationMs injects exactly one finalize steering message and does not exit the loop early.",
+    "Re-run terminal-bench-largest-eigenval pass@3: the failing repeat_02 must now write /app/eigen.py before the 900s timeout."
+  ],
+  "analysis_tags": [
+    "deadline-aware-turn-control",
+    "wall-clock-budget",
+    "agent-loop",
+    "finalize-steering",
+    "within-task-contrast",
+    "timeout-recovery"
+  ]
+}

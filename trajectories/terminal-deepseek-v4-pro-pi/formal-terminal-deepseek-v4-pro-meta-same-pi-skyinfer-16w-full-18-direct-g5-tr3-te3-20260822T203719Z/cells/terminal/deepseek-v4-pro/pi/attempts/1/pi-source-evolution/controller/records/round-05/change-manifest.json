@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "change_id": "round-05-shared-prompt-completion-discipline",
+  "layer": "shared_resource",
+  "primary_module": "SHARED_PROMPT",
+  "compound_modules": [],
+  "files": [
+    ".pi/APPEND_SYSTEM.md"
+  ],
+  "requires_rebuild": false,
+  "failure_evidence": [
+    "task=terminal-bench-tune-mjcf; failure_repeat=2; action=action_10 wrote only a baseline `cp model_ref.xml model.xml` then actions 11-27 kept enumerating MuJoCo solver/timestep variants without ever persisting a tuned /app/model.xml; verifier=AgentTimeoutError after 900.0s, reward 0.0 (no tuned artifact on disk); pass_repeat=0",
+    "task=terminal-bench-largest-eigenval; failure_repeat=2; action=action_42 bash scipy.linalg/dgeev microbenchmark — the entire budget went to LAPACK/ctypes benchmarking and /app/eigen.py was never written; verifier=AgentTimeoutError after 900.0s, reward 0.0; pass_repeat=0",
+    "task=terminal-bench-raman-fitting; failure_repeat=0; action=actions 01-58 were all data/calibration exploration and the task-contract-required /app/results.json was never written; verifier=AgentTimeoutError after 900.0s, reward 0.0; pass_repeat=none",
+    "/app/pi-source-evidence/references/a7a7e04622bad4d7-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/91a345491e5ba96d-terminal-bench-tune-mjcf.md",
+    "/app/pi-source-evidence/references/298a54707d4b6b91-terminal-bench-largest-eigenval.md",
+    "/app/pi-source-evidence/references/d8fa15cf23b67226-terminal-bench-raman-fitting.md"
+  ],
+  "root_cause": "The agent lacks completion discipline: it treats tasks as open-ended exploration and leaves the required output artifact unwritten until it has 'finished' analyzing. The external verifier scores the files on disk, so runs that persist a best-effort artifact early earn credit even when the harness later kills them, while runs that keep exploring never persist anything and are killed with reward 0. This is absent execution discipline/guidance, not a broken runtime mechanism (write/read/bash all executed correctly in the failing runs).",
+  "mechanism": "Append concise completion-discipline guidance to .pi/APPEND_SYSTEM.md, the unconditional append-to-system-prompt file every Pi task pays for: define done as the required output file(s) existing at their exact required paths and passing the task's own validation; write a best-effort version of each required file as soon as a plausible candidate exists and refine/re-verify it in place; bound exploration and microbenchmarking and commit once acceptance criteria are met.",
+  "evidence_basis": "within_task_contrast",
+  "prior_attempt_disposition": "rollback_and_pivot",
+  "why_this_component": "SHARED_PROMPT is the correct owner because the causal defect is absent completion discipline (a guidance gap), not broken runtime execution. It is loaded unconditionally on the default Pi task-agent path (PI_SRC_PROMPT_LOADER appends it to the system prompt), and I verified pi_resource_check.mjs returns ok:true with no diagnostics. Rounds 2-4 show source-side time/reasoning interventions were falsified, so the remaining lever supported by the within-task contrasts is guidance.",
+  "predicted_fixes": [
+    "terminal-bench-tune-mjcf failing repeats 1 and 2 persist a tuned /app/model.xml once a candidate meets tolerance, flipping at least one 0.0 repeat to 1.0.",
+    "terminal-bench-largest-eigenval failing repeat 2 writes /app/eigen.py early instead of microbenchmarking LAPACK to the deadline, flipping 0.0 to 1.0.",
+    "terminal-bench-raman-fitting repeats write a best-effort /app/results.json once peaks are located instead of guaranteed 0.0.",
+    "terminal-bench-gcode-to-text repeats commit to a decoded-text artifact earlier rather than endless projection tuning.",
+    "Adaptive-rejection-sampler repeats prioritize generating the required sample files after writing ars.R, giving the verifier something to check before the deadline."
+  ],
+  "regression_risks": [
+    "The guidance is unconditional and adds ~100 tokens to every task's system prompt; the input-token cost is negligible relative to reasoning generation, and the guidance reinforces the persist-then-verify behavior the currently passing tasks already exhibit.",
+    "A task where early commitment is premature could be nudged to stop exploring too soon, but the guidance explicitly allows continued polishing after verification, and a persisted correct-but-suboptimal artifact is strictly better than an unwritten one."
+  ],
+  "targeted_checks": [
+    "resource-preflight and prompt-load-smoke (SHARED_PROMPT targeted checks); verified locally via pi_resource_check.mjs ok:true, no diagnostics.",
+    "Re-run terminal-bench-tune-mjcf and terminal-bench-largest-eigenval pass@3: the failing repeats must now write their required artifacts (/app/model.xml, /app/eigen.py) before the deadline."
+  ],
+  "analysis_tags": [
+    "completion-discipline",
+    "persist-early",
+    "wall-clock-timeout",
+    "shared-prompt",
+    "within-task-contrast",
+    "artifact-persistence"
+  ]
+}

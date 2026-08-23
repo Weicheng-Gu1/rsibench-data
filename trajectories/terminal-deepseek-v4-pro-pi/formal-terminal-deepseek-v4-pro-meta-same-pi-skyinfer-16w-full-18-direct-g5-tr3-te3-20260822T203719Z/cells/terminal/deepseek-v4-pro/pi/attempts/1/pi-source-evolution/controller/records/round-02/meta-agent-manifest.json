@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "change_id": "pi-src-provider-runtime-cap-reasoning-off-max-tokens",
+  "failure_evidence": [
+    "17 of 18 reward-0 TRAIN trajectories fail with wall-clock AgentTimeoutError (900.0s; 1800.0s for terminal-bench-make-mips-interpreter) per dc9b7d730d20a643-training-failures.json, spanning model-extraction-relu-logits, tune-mjcf, make-mips-interpreter, largest-eigenval, qemu-alpine-ssh, gcode-to-text, adaptive-rejection-sampler, and raman-fitting.",
+    "terminal-bench-adaptive-rejection-sampler repeat_00 (93208044de60fe98-trajectory.jsonl) contains an assistant message with usage.reasoning=53337 tokens whose timestamp-to-next-tool-result gap is 725.2s, proving a single reasoning turn can exhaust the 900s budget.",
+    "All trajectories record thinking_level_change to off and PI_REASONING_LEVEL=off, yet assistant messages still carry type:thinking blocks and usage.reasoning (largest-eigenval pass 468650d42ddb82ca-trajectory.jsonl accumulated 34702 reasoning tokens and still hit AgentTimeoutError after 888.8s), showing the off level is not honored on the wire for this openai-completions model."
+  ],
+  "root_cause": "When thinkingLevel is off, the agent loop maps reasoning to undefined, but openai-completions streamSimple/buildBaseOptions still passes the model's full advertised maxTokens (384000 for deepseek-v4-pro) as max_completion_tokens. A reasoning model behind an OpenAI-compatible gateway that does not honor the disabled-thinking signal then generates an unbounded chain-of-thought trace (up to 53k reasoning tokens in one turn, ~725s), consuming the wall-clock deadline before the task is solved.",
+  "mechanism": "In packages/ai/src/api/openai-completions.ts streamSimple, when reasoningEffort is undefined (thinking off), no explicit caller maxTokens is set, and the model advertises maxTokens above a new DEFAULT_MAX_TOKENS_WITHOUT_REASONING constant (16384), cap the serialized completion budget to min(base.maxTokens, 16384). This bounds per-turn reasoning+content for reasoning-capable models only when thinking is off, matching the 16384 non-reasoning default already used by provider-composer.ts, while leaving explicit caller caps and reasoning-on requests untouched.",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "new_direction",
+  "why_this_component": "The defect is at the provider wire boundary: a correct off decision from the agent loop is transformed into an unbounded max_completion_tokens request. That is exactly PI_SRC_PROVIDER_RUNTIME scope (owned file packages/ai/src/api/openai-completions.ts), not the agent loop (which already emits reasoning=undefined) and not prompt guidance.",
+  "predicted_fixes": [
+    "Prevents single-turn reasoning runaways (53k tokens / 725s) so the model is forced to emit a tool call or answer within a bounded budget, keeping the agent progressing instead of dying at AgentTimeoutError.",
+    "Bounds every off-reasoning turn across all timed-out tasks, giving the agent substantially more effective turns inside the 900s deadline and increasing the chance the solution file is written before the harness kills it."
+  ],
+  "regression_risks": [
+    "A single >16384-token output produced with thinking off (e.g. one very large file emitted in a single tool call) would be truncated; the agent can still write large files in chunks or via bash heredoc.",
+    "Rare non-reasoning models whose catalog maxTokens exceeds 16384 would also be capped when thinking is off, a minor tightening of the default output budget."
+  ],
+  "targeted_checks": [
+    "Mandatory clean rebuild + CLI smoke via candidate_check.py --agent pi --source /app/pi-source-candidate: npm ci --ignore-scripts --offline, npm run build:offline, and cli.js --version all PASS; attestation written and verified at /logs/agent/candidate-self-check.json (sha256 bed4ff53010183611e1a69c2ac5acc80e9e48a86ecf8ed9fab6ce32d3337320c).",
+    "Provider-request fixture: assert max_completion_tokens is capped to 16384 when reasoning is off for a model with maxTokens=384000, and unchanged when an explicit options.maxTokens or a reasoning level is supplied."
+  ],
+  "analysis_tags": [
+    "reasoning-budget",
+    "wall-clock-timeout",
+    "openai-completions",
+    "deepseek",
+    "max_completion_tokens",
+    "provider-runtime",
+    "AgentTimeoutError"
+  ]
+}

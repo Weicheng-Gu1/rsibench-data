@@ -1,0 +1,48 @@
+diff --git a/packages/ai/src/api/openai-completions.ts b/packages/ai/src/api/openai-completions.ts
+index 5c4cfcc..f6fd9a6 100644
+--- a/packages/ai/src/api/openai-completions.ts
++++ b/packages/ai/src/api/openai-completions.ts
+@@ -692,6 +692,22 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
+ 	return stream;
+ };
+ 
++/**
++ * Upper bound for a single completion when reasoning is disabled.
++ *
++ * Reasoning-capable models advertise a huge `maxTokens` to leave room for
++ * chain-of-thought (e.g. DeepSeek V4 Pro advertises 384000). When the caller
++ * turns thinking off, the full budget is still serialized as
++ * `max_completion_tokens`, so a model that keeps reasoning anyway (several
++ * OpenAI-compatible gateways do not honor a "thinking disabled" flag) can emit
++ * tens of thousands of reasoning tokens in a single turn. One such turn can
++ * consume the agent's entire wall-clock deadline (observed in training: ~53k
++ * reasoning tokens in ~725s). Non-reasoning models in the bundled catalog cap
++ * output around 16k tokens, so reuse that same bound when thinking is off to
++ * keep turns bounded and the agent making progress.
++ */
++const DEFAULT_MAX_TOKENS_WITHOUT_REASONING = 16384;
++
+ export const streamSimple: StreamFunction<"openai-completions", SimpleStreamOptions> = (
+ 	model: Model<"openai-completions">,
+ 	context: Context,
+@@ -704,8 +720,20 @@ export const streamSimple: StreamFunction<"openai-completions", SimpleStreamOpti
+ 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
+ 	const toolChoice = (options as OpenAICompletionsOptions | undefined)?.toolChoice;
+ 
++	// When thinking is off and the caller did not request a specific output cap,
++	// a model whose advertised maxTokens exceeds the non-reasoning bound is
++	// presumed to be reserving that headroom for chain-of-thought. Bound the
++	// completion so a single turn cannot burn the whole run on reasoning.
++	const maxTokens =
++		reasoningEffort === undefined &&
++		options?.maxTokens === undefined &&
++		model.maxTokens > DEFAULT_MAX_TOKENS_WITHOUT_REASONING
++			? Math.min(base.maxTokens ?? model.maxTokens, DEFAULT_MAX_TOKENS_WITHOUT_REASONING)
++			: base.maxTokens;
++
+ 	return stream(model, context, {
+ 		...base,
++		maxTokens,
+ 		reasoningEffort,
+ 		toolChoice,
+ 	} satisfies OpenAICompletionsOptions);
