@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Round-01's provider-stream wall-clock cap was performance-rejected (0.489→0.222), so I pivoted to a non-stream, additive mechanism grounded in the dominant cross-task failure pattern: 18/23 failed trajectories died at the external AgentTimeoutError, and ~13 of those were killed still exploring, with deliverables missing or incomplete (gcode×3 out.txt absent, cobol×3 required files absent, comp r1 no compressed file, model-x r2 no stolen matrix, ars×2 no R file, headless r0 no module, cython r1 killed mid-install at 10/11). Trajectories show the model has no wall-clock signal anywhere: no elapsed time in observations, no deadline warning before fatal late turns (e.g., model-x r2 starts a fresh giant generation at t+655s that never completes). The change adds deadline-aware pacing to the agent loop on the default path: compact elapsed-time footers on every tool result plus one-shot escalating checkpoint notices at 8/12/14 minutes urging the model to commit and verify current-best deliverables, then continue. It never truncates, aborts, or resumes generations, so it does not repeat round-01's failure mode.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "round-02-deadline-aware-pacing",
+    "failure_evidence": [
+      "task=terminal-bench-build-cython-ext; failure_repeat=1; action=action_41 after ~41 turns launched a 300s pip reinstall at t+861s and was killed during install at t+892s instead of verifying its already-committed fix; verifier=10/11 tests passed, repo test never re-run; pass_repeat=0",
+      "task=terminal-bench-model-extraction-relu-logits; failure_repeat=2; action=action_03 turn-3 generation began at t+655s with zero artifacts persisted and never completed inside the remaining 245s; verifier=0/1 test_stolen_matrix_matches; pass_repeat=0,1",
+      "task=terminal-bench-gcode-to-text; failure_repeat=1; action=turns 10-31 kept re-rendering projection scripts with no clock; out.txt still unwritten at kill t+885s; verifier=test_hello_file_exists: File /app/out.txt does not exist; pass_repeat=none",
+      "task=terminal-bench-cobol-modernization; failure_repeat=1; action=12 turns of probing/compiling probes; required modernized output files never committed by kill t+833s; verifier=test_required_files_exist failed (1/3); pass_repeat=none",
+      "task=terminal-bench-write-compressor; failure_repeat=1; action=after measuring the gzip baseline in turn 2, no compressor artifact was written before the run died; verifier=test_compressed_file_exists failed; pass_repeat=0,2",
+      "aggregate: 18 of 23 failed trajectories end at AgentTimeoutError; 13+ end with deliverable-missing or deliverable-incomplete verifier failures; /app/pi-source-evidence/references/627505108b30be2e-training-opportunity-index.json",
+      "/app/pi-source-evidence/references/1f1861d0eb13382e-evolution-history.json (round-01 rejection)"
+    ],
+    "root_cause": "Runs execute under a hard external wall-clock budget (900s/1800s), but the agent loop exposes no time signal: tool results carry no elapsed clock and no warning is ever injected before late turns. The model therefore paces blind: it keeps exploring/refining past the point where its current-best work should be committed, launch long install/test or fresh giant generations in the final minutes, and the external kill catches it with required deliverables unwritten (objects in context are lost; the verifier only sees the filesystem).",
+    "mechanism": "packages/agent/src/agent-loop.ts gains deadline-aware pacing inside runLoop (the default RSIBench path: pi --print -> AgentSession.prompt -> runAgentLoop -> runLoop): (1) runLoop records runStartedAt and turnCount; every tool-result message gets a compact '[time T+m:ss, turn N]' footer so each turn carries a visible clock; (2) collectDuePacingMessages injects a one-shot synthetic user message (message_start/message_end events, pushed into context like steering messages) when a turn boundary passes elapsed milestones 8/12/14 minutes, with escalating text: save current best deliverables to required paths now -> prefer a complete verified end state over exploration -> assume little time remains, finalize immediately. Both signals are advisory text only; they never truncate, cap, abort, or resume generations. PI_AGENT_PACING=0 disables; PI_AGENT_PACING_MILESTONES_MS overrides milestones (defaults are the default-path behavior, consumed by every run).",
+    "evidence_basis": "cross_task_pattern",
+    "prior_attempt_disposition": "rollback_and_pivot",
+    "why_this_component": "agent-loop.ts (PI_SRC_AGENT_LOOP) owns turn progression, tool-result handoff, and message injection; its documented concern is exactly turn/stopping behavior, and the failure is that the loop lets the model run blind into the external deadline. The mechanism deliberately avoids the provider-stream layer where round-01's rejected wall-clock cap lived, requires no tool-runtime change, and is on the default path (runLoop is invoked for every print-mode task run), so the added notices and footers have a guaranteed default-path consumer.",
+    "predicted_fixes": [
+      "build-cython-ext r1: the 8:00/12:00 notices fire at turn boundaries (~t+602s and ~t+861s), pushing verification and committed final state before the fatal 300s reinstall - plausible 10/11 -> 11/11 flip",
+      "model-extraction-relu-logits r2: the 8:00 notice lands at the t+655s boundary before the never-completing third generation, urging immediate write of steal.py/stolen_A1.npy - plausible flip; r0/r1 unaffected since they already act incrementally",
+      "gcode-to-text r0/r1/r2 and cobol-modernization r0/r1/r2: repeated clock footers plus 8-14 minute notices convert late exploration turns into committed deliverable writes (out.txt, required program files) instead of dying with nothing - at least one repeat plausibly flips from missing-artifact to passing content",
+      "write-compressor r1 / tune-mjcf r2 / largest-eigenval r0/r1: earlier compression of 'write deliverable + verify' into the turn schedule reduces the chance of the final minutes being spent on uncommitted exploratory turns"
+    ],
+    "regression_risks": [
+      "Long passing runs (>8min: make-mips-interpreter r1 1561s, qemu r0, adaptive-rejection-sampler r2, write-compressor r0) receive the footers and up to 3 notices; text explicitly says continue after checkpointing, but the 14:00 'finalize immediately' notice could induce a premature stop in the 1800s-budget mips pass - falsifier: terminal-bench-make-mips-interpreter pass_repeat=1 must not regress",
+      "Extra context tokens (~10 per tool result, at most 3 notices per run) - negligible vs 50KB outputs, but shifts prompt caches slightly for all runs",
+      "Synthetic user notices appear in transcripts and interactive sessions (self-describing '[automated pacing notice]' text, same channel as steering messages)"
+    ],
+    "targeted_checks": [
+      "agent-loop",
+      "cancel-error-smoke",
+      "task-flip watch: terminal-bench-build-cython-ext (r1 should commit/verify earlier), terminal-bench-model-extraction-relu-logits (r2 should write the matrix file; r0/r1 must not regress), terminal-bench-gcode-to-text and terminal-bench-cobol-modernization (at least one repeat writes deliverables before the deadline)",
+      "regression watch: terminal-bench-make-mips-interpreter r1 and terminal-bench-qemu-alpine-ssh (long passes must not be derailed by pacing notices); if mips r1 flips pass->fail the 14:00 milestone is too aggressive for 1800s budgets"
+    ],
+    "analysis_tags": [
+      "deadline-aware-pacing",
+      "wall-clock-visibility",
+      "checkpoint-reminder",
+      "adaptive-stopping",
+      "missing-deliverable",
+      "cross-task-timeout-pattern",
+      "PI_SRC_AGENT_LOOP",
+      "pivot-from-round-01-stream-cap"
+    ]
+  }
+}

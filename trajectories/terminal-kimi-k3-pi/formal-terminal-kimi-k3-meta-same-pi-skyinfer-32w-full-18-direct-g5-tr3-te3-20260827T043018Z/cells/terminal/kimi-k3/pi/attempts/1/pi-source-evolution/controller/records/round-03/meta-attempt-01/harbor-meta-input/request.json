@@ -1,0 +1,618 @@
+{
+  "schema_version": 1,
+  "candidate_id": "round-03",
+  "attempt": 1,
+  "candidate_worktree": "/app/pi-source-candidate",
+  "accepted_commit": "dfafe657668764e4c6a6e8158b480df7b0503a0c",
+  "baseline": {
+    "upstream_ref": "v0.82.1",
+    "upstream_commit": "b4f293684bba718d59cc1157679bcf6157b3a7f5"
+  },
+  "failure_evidence": [
+    "/app/pi-source-evidence/references/b16daf0a0993faae-archive-index.json",
+    "/app/pi-source-evidence/references/127636092d728dfc-index.json",
+    "/app/pi-source-evidence/references/bab25251bce74937-evolution-history.json",
+    "/app/pi-source-evidence/references/45efb792559648d1-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/9bc863c11ac860fc-training-failures.json",
+    "training_mean_reward=0.488889",
+    "failed_or_partial_trajectories=28",
+    "all_training_trajectories=45"
+  ],
+  "previous_validation_feedback": null,
+  "previous_submission": null,
+  "module_catalog": {
+    "schema_version": 1,
+    "module_protocol_version": 2,
+    "developer_guide": {
+      "schema_version": 1,
+      "required_before_editing": [
+        "Read the guidance for every plausible source or shared module and inspect its inspect_first files in the candidate worktree.",
+        "Optimize for the largest expected downstream score gain supported by the trajectories; patch size and rebuild cost are secondary engineering costs, not selection objectives.",
+        "For Pi, actively seek durable generalizable behavioral habits, decision habits, and runtime mechanisms in the appropriate real source module instead of treating source files as bug-fix-only surfaces.",
+        "Use SHARED_PROMPT, SHARED_RULES, or SHARED_SKILLS when the causal defect is genuinely missing task guidance, policy, knowledge, or a reusable textual procedure; source preference must not override contrary failure evidence.",
+        "Choose the earliest causal break supported by failure evidence; do not choose prompt/rules merely to avoid a rebuild.",
+        "A candidate may implement multiple independent causal objectives when each is separately grounded and the combined set maximizes expected downstream gain. Do not invent a shared root cause for unrelated findings; keep objective-to-evidence and objective-to-check mappings explicit.",
+        "When one objective requires coordinated edits across multiple physical modules in the same layer, edit all necessary files; the controller will attribute their physical owners."
+      ],
+      "source_vs_shared_examples": [
+        "Missing task strategy -> SHARED_PROMPT/RULES/SKILLS; correct strategy not loaded -> PI_SRC_PROMPT_LOADER or PI_SRC_SKILL_LOADER.",
+        "Bad tool policy -> shared resource; incorrect tool execution -> PI_SRC_TOOL_RUNTIME; lossy tool result -> PI_SRC_OBSERVATION.",
+        "Bad context assembly -> PI_SRC_CONTEXT; bad request serialization or stream parsing -> PI_SRC_PROVIDER_RUNTIME.",
+        "New lifecycle script -> SHARED_HOOKS; broken extension/event machinery -> PI_SRC_EXTENSION_RUNTIME.",
+        "Source capability additions may include deadline-aware turn control, adaptive stopping, completion-state detection, observation prioritization, context deduplication, tool recovery, and phase-aware execution; a pre-existing source bug is not required."
+      ],
+      "upstream_reference_docs": [
+        "AGENTS.md",
+        "packages/agent/README.md",
+        "packages/coding-agent/README.md",
+        "packages/coding-agent/docs/sdk.md",
+        "packages/coding-agent/docs/extensions.md",
+        "packages/coding-agent/docs/compaction.md"
+      ]
+    },
+    "modules": [
+      {
+        "module_id": "PI_SRC_AGENT_LOOP",
+        "label": "Agent Loop",
+        "layer": "agent_core_source",
+        "paths": [
+          "packages/agent/src/agent-loop.ts",
+          "packages/agent/src/agent.ts",
+          "packages/agent/src/stream-fn.ts"
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke"
+        ],
+        "requires_core_rebuild": true,
+        "developer_guidance": {
+          "choose_when": [
+            "turn progression, tool-call cycling, stopping, cancellation, or retry state is wrong",
+            "the agent stops before acting or continues after a terminal state"
+          ],
+          "inspect_first": [
+            "packages/agent/README.md",
+            "packages/agent/src/agent-loop.ts"
+          ],
+          "boundary": "Do not change provider request serialization or task policy here."
+        }
+      },
+      {
+        "module_id": "PI_SRC_HARNESS_RUNTIME",
+        "label": "Agent Harness Runtime",
+        "layer": "agent_core_source",
+        "paths": [
+          "packages/agent/src/harness/agent-harness.ts",
+          "packages/agent/src/harness/env/**",
+          "packages/agent/src/harness/types.ts",
+          "packages/agent/src/index.ts",
+          "packages/agent/src/node.ts",
+          "packages/agent/src/proxy.ts",
+          "packages/agent/src/types.ts"
+        ],
+        "targeted_checks": [
+          "agent-harness"
+        ],
+        "requires_core_rebuild": true,
+        "developer_guidance": {
+          "choose_when": [
+            "the reusable agent harness wires environment, lifecycle, or runtime dependencies incorrectly"
+          ],
+          "inspect_first": [
+            "packages/agent/README.md",
+            "packages/agent/src/harness/agent-harness.ts"
+          ],
+          "boundary": "Task-specific instructions belong to shared resources, not harness wiring."
+        }
+      },
+      {
+        "module_id": "PI_SRC_CODING_SESSION",
+        "label": "Coding Session Runtime",
+        "layer": "agent_core_source",
+        "paths": [
+          "packages/coding-agent/src/core/agent-session.ts",
+          "packages/coding-agent/src/core/agent-session-*.ts"
+        ],
+        "targeted_checks": [
+          "agent-session",
+          "cli-smoke"
+        ],
+        "requires_core_rebuild": true,
+        "developer_guidance": {
+          "choose_when": [
+            "coding-session orchestration, event propagation, resume behavior, or SDK turn entry is wrong"
+          ],
+          "inspect_first": [
+            "packages/coding-agent/docs/sdk.md",
+            "packages/coding-agent/src/core/agent-session.ts"
+          ],
+          "boundary": "Low-level agent-loop state has a separate owner; sdk.ts assembly is frozen."
+        }
+      },
+      {
+        "module_id": "PI_SRC_OBSERVATION",
+        "label": "Observation and Tool-result Processing",
+        "layer": "agent_core_source",
+        "paths": [
+          "packages/agent/src/harness/messages.ts",
+          "packages/agent/src/harness/utils/shell-output.ts",
+          "packages/agent/src/harness/utils/truncate.ts",
+          "packages/coding-agent/src/core/messages.ts",
+          "packages/coding-agent/src/core/tools/output-accumulator.ts",
+          "packages/coding-agent/src/core/tools/truncate.ts"
+        ],
+        "targeted_checks": [
+          "messages",
+          "tool-output",
+          "truncate"
+        ],
+        "requires_core_rebuild": true,
+        "developer_guidance": {
+          "choose_when": [
+            "tool results, errors, shell output, truncation metadata, or message fidelity loses actionable evidence"
+          ],
+          "inspect_first": [
+            "packages/coding-agent/src/core/messages.ts",
+            "packages/coding-agent/src/core/tools/truncate.ts"
+          ],
+          "boundary": "Tool execution belongs to tool runtime; this module owns what the model observes."
+        }
+      },
+      {
+        "module_id": "PI_SRC_CONTEXT",
+        "label": "Context Construction and Provider Handoff",
+        "layer": "agent_core_source",
+        "paths": [
+          "packages/coding-agent/src/core/model-runtime.ts",
+          "packages/coding-agent/src/core/provider-composer.ts"
+        ],
+        "targeted_checks": [
+          "context",
+          "provider-context"
+        ],
+        "requires_core_rebuild": true,
+        "developer_guidance": {
+          "choose_when": [
+            "valid history is assembled incorrectly before the provider handoff",
+            "model context omits, duplicates, or orders messages incorrectly before serialization"
+          ],
+          "inspect_first": [
+            "packages/coding-agent/src/core/model-runtime.ts",
+            "packages/coding-agent/src/core/provider-composer.ts"
+          ],
+          "boundary": "Wire-format parameters and streamed response parsing belong to provider runtime."
+        }
+      },
+      {
+        "module_id": "PI_SRC_COMPACTION",
+        "label": "Compaction",
+        "layer": "agent_core_source",
+        "paths": [
+          "packages/agent/src/harness/compaction/**",
+          "packages/coding-agent/src/core/compaction/**"
+        ],
+        "targeted_checks": [
+          "compaction"
+        ],
+        "requires_core_rebuild": true,
+        "developer_guidance": {
+          "choose_when": [
+            "overflow, summary, branch recovery, or compacted context destroys task-critical state"
+          ],
+          "inspect_first": [
+            "packages/coding-agent/docs/compaction.md",
+            "packages/coding-agent/src/core/compaction"
+          ],
+          "boundary": "Ordinary message handoff without compaction belongs to context or observation."
+        }
+      },
+      {
+        "module_id": "PI_SRC_PROMPT_LOADER",
+        "label": "Prompt Loader",
+        "layer": "agent_core_source",
+        "paths": [
+          "packages/agent/src/harness/system-prompt.ts",
+          "packages/agent/src/harness/prompt-templates.ts",
+          "packages/coding-agent/src/core/system-prompt.ts",
+          "packages/coding-agent/src/core/prompt-templates.ts",
+          "packages/coding-agent/src/cli/initial-message.ts"
+        ],
+        "targeted_checks": [
+          "prompt-loader"
+        ],
+        "requires_core_rebuild": true,
+        "developer_guidance": {
+          "choose_when": [
+            "correct prompt resources exist but discovery, ordering, escaping, or injection is wrong"
+          ],
+          "inspect_first": [
+            "packages/coding-agent/src/core/system-prompt.ts",
+            "packages/coding-agent/src/core/prompt-templates.ts"
+          ],
+          "boundary": "Changing task guidance itself belongs to SHARED_PROMPT or SHARED_RULES."
+        }
+      },
+      {
+        "module_id": "PI_SRC_SKILL_LOADER",
+        "label": "Skill Loader",
+        "layer": "agent_core_source",
+        "paths": [
+          "packages/agent/src/harness/skills.ts",
+          "packages/coding-agent/src/core/skills.ts"
+        ],
+        "targeted_checks": [
+          "skills"
+        ],
+        "requires_core_rebuild": true,
+        "developer_guidance": {
+          "choose_when": [
+            "correct skills exist but discovery, filtering, precedence, or conditional activation fails"
+          ],
+          "inspect_first": [
+            "packages/coding-agent/src/core/skills.ts",
+            "packages/agent/src/harness/skills.ts"
+          ],
+          "boundary": "Skill content belongs to SHARED_SKILLS; generic resource discovery belongs to PI_SRC_RESOURCE_LOADER."
+        }
+      },
+      {
+        "module_id": "PI_SRC_RESOURCE_LOADER",
+        "label": "Resource Loader",
+        "layer": "agent_core_source",
+        "paths": [
+          "packages/coding-agent/src/core/resource-loader.ts"
+        ],
+        "targeted_checks": [
+          "resource-loader"
+        ],
+        "requires_core_rebuild": true,
+        "developer_guidance": {
+          "choose_when": [
+            "prompts, skills, extensions, context files, or APPEND_SYSTEM exist but are not discovered, ordered, or loaded correctly"
+          ],
+          "inspect_first": [
+            "packages/coding-agent/src/core/resource-loader.ts",
+            "packages/coding-agent/docs/sdk.md"
+          ],
+          "boundary": "Skill selection semantics belong to PI_SRC_SKILL_LOADER; resource content belongs to the shared modules."
+        }
+      },
+      {
+        "module_id": "PI_SRC_TOOL_RUNTIME",
+        "label": "Tool Runtime",
+        "layer": "agent_core_source",
+        "paths": [
+          "packages/agent/src/harness/tools/**",
+          "packages/coding-agent/src/core/tools/bash.ts",
+          "packages/coding-agent/src/core/tools/edit-diff.ts",
+          "packages/coding-agent/src/core/tools/edit.ts",
+          "packages/coding-agent/src/core/tools/file-mutation-queue.ts",
+          "packages/coding-agent/src/core/tools/find.ts",
+          "packages/coding-agent/src/core/tools/grep.ts",
+          "packages/coding-agent/src/core/tools/index.ts",
+          "packages/coding-agent/src/core/tools/ls.ts",
+          "packages/coding-agent/src/core/tools/path-utils.ts",
+          "packages/coding-agent/src/core/tools/read.ts",
+          "packages/coding-agent/src/core/tools/render-utils.ts",
+          "packages/coding-agent/src/core/tools/tool-definition-wrapper.ts",
+          "packages/coding-agent/src/core/tools/write.ts",
+          "packages/coding-agent/src/core/bash-executor.ts",
+          "packages/coding-agent/src/core/exec.ts"
+        ],
+        "targeted_checks": [
+          "tools",
+          "mutation-queue"
+        ],
+        "requires_core_rebuild": true,
+        "developer_guidance": {
+          "choose_when": [
+            "tool schema, invocation, filesystem mutation, bash execution, timeout, or execution error is wrong"
+          ],
+          "inspect_first": [
+            "packages/coding-agent/README.md",
+            "packages/coding-agent/src/core/tools"
+          ],
+          "boundary": "Lossy presentation of an otherwise correct result belongs to observation."
+        }
+      },
+      {
+        "module_id": "PI_SRC_EXTENSION_RUNTIME",
+        "label": "Extension and Event Runtime",
+        "layer": "agent_core_source",
+        "paths": [
+          "packages/coding-agent/src/core/extensions/**",
+          "packages/coding-agent/src/core/event-bus.ts",
+          "packages/coding-agent/src/extensions/**"
+        ],
+        "targeted_checks": [
+          "extension-loader",
+          "extension-runner"
+        ],
+        "requires_core_rebuild": true,
+        "developer_guidance": {
+          "choose_when": [
+            "extension loading, event dispatch, in-process hooks, isolation, or extension failure handling is wrong"
+          ],
+          "inspect_first": [
+            "packages/coding-agent/docs/extensions.md",
+            "packages/coding-agent/src/core/extensions"
+          ],
+          "boundary": "A new task-level hook script belongs to SHARED_HOOKS."
+        }
+      },
+      {
+        "module_id": "PI_SRC_PROVIDER_RUNTIME",
+        "label": "Provider Request and Stream Runtime",
+        "layer": "agent_core_source",
+        "paths": [
+          "packages/ai/src/api/anthropic-messages.ts",
+          "packages/ai/src/api/constrained-sampling.ts",
+          "packages/ai/src/api/openai-completions.ts",
+          "packages/ai/src/api/openai-responses.ts",
+          "packages/ai/src/api/openai-responses-shared.ts",
+          "packages/ai/src/api/simple-options.ts",
+          "packages/ai/src/api/transform-messages.ts",
+          "packages/ai/src/utils/error-body.ts",
+          "packages/ai/src/utils/event-stream.ts",
+          "packages/ai/src/utils/json-parse.ts",
+          "packages/ai/src/utils/provider-retry.ts"
+        ],
+        "targeted_checks": [
+          "provider-request",
+          "provider-stream",
+          "tool-call-parsing",
+          "reasoning-budget"
+        ],
+        "requires_core_rebuild": true,
+        "developer_guidance": {
+          "choose_when": [
+            "request parameters such as reasoning budget are not serialized or honored",
+            "stream events, tool calls, usage, finish reasons, retries, or provider errors are parsed incorrectly",
+            "a correct context reaches the provider boundary but is transformed incorrectly on the wire"
+          ],
+          "inspect_first": [
+            "packages/ai/src/api/openai-completions.ts",
+            "packages/ai/src/api/anthropic-messages.ts",
+            "packages/ai/src/api/simple-options.ts",
+            "packages/ai/src/api/transform-messages.ts"
+          ],
+          "boundary": "Model catalogs, provider registration, credentials, endpoint routing, lazy entry wrappers, and experiment model choice remain frozen."
+        }
+      },
+      {
+        "module_id": "SHARED_PROMPT",
+        "label": "Prompt and Project Instructions",
+        "layer": "shared_resource",
+        "paths": [
+          ".pi/APPEND_SYSTEM.md"
+        ],
+        "targeted_checks": [
+          "resource-preflight",
+          "prompt-load-smoke"
+        ],
+        "requires_core_rebuild": false,
+        "developer_guidance": {
+          "choose_when": [
+            "the task agent lacks concise global guidance that applies across most downstream tasks",
+            "the failure is caused by an absent general strategy rather than broken runtime execution"
+          ],
+          "inspect_first": [
+            ".pi/APPEND_SYSTEM.md"
+          ],
+          "boundary": "Do not encode task answers, hidden-test details, model routing, budgets, or behavior that belongs in a narrower rule or skill."
+        }
+      },
+      {
+        "module_id": "SHARED_RULES",
+        "label": "Rules and Policies",
+        "layer": "shared_resource",
+        "paths": [
+          "AGENTS.md"
+        ],
+        "targeted_checks": [
+          "resource-preflight",
+          "rule-load-smoke"
+        ],
+        "requires_core_rebuild": false,
+        "developer_guidance": {
+          "choose_when": [
+            "a conditional policy or safety constraint should apply only when its stated trigger is present"
+          ],
+          "inspect_first": [
+            "AGENTS.md"
+          ],
+          "boundary": "Rules express policy, not executable lifecycle actions, provider configuration, or benchmark-specific answers."
+        }
+      },
+      {
+        "module_id": "SHARED_SKILLS",
+        "label": "Skills",
+        "layer": "shared_resource",
+        "paths": [
+          ".pi/skills/**"
+        ],
+        "targeted_checks": [
+          "resource-preflight",
+          "skill-load-smoke"
+        ],
+        "requires_core_rebuild": false,
+        "developer_guidance": {
+          "choose_when": [
+            "failures share a specialized, reusable procedure that the agent should invoke only for matching tasks"
+          ],
+          "inspect_first": [
+            ".pi/skills"
+          ],
+          "boundary": "Use prompt or rules for universal policy; do not use a skill to replace broken skill loading or tool execution."
+        }
+      },
+      {
+        "module_id": "SHARED_HOOKS",
+        "label": "Lifecycle Hooks",
+        "layer": "shared_resource",
+        "paths": [
+          ".pi/extensions/hooks/**"
+        ],
+        "targeted_checks": [
+          "hook-schema",
+          "hook-smoke"
+        ],
+        "requires_core_rebuild": false,
+        "developer_guidance": {
+          "choose_when": [
+            "a deterministic lifecycle action is needed before, during, or after an agent event"
+          ],
+          "inspect_first": [
+            ".pi/extensions/hooks"
+          ],
+          "boundary": "Hooks may not access hidden tests, evaluators, credentials, model routing, budgets, or acceptance state."
+        }
+      },
+      {
+        "module_id": "SHARED_MCP",
+        "label": "MCP and External Adapters",
+        "layer": "shared_resource",
+        "paths": [
+          ".pi/extensions/mcp/**"
+        ],
+        "targeted_checks": [
+          "mcp-schema",
+          "mcp-handshake-smoke"
+        ],
+        "requires_core_rebuild": false,
+        "developer_guidance": {
+          "choose_when": [
+            "the agent needs a bounded external tool or service capability unavailable through native tools"
+          ],
+          "inspect_first": [
+            ".pi/extensions/mcp"
+          ],
+          "boundary": "MCP may not change the experiment model endpoint, expose evaluator state, or bypass sandbox and tool policy."
+        }
+      },
+      {
+        "module_id": "SHARED_WORKFLOW",
+        "label": "Subagents and Command Workflows",
+        "layer": "shared_resource",
+        "paths": [
+          ".pi/prompts/**"
+        ],
+        "targeted_checks": [
+          "resource-preflight",
+          "workflow-load-smoke"
+        ],
+        "requires_core_rebuild": false,
+        "developer_guidance": {
+          "choose_when": [
+            "a repeatable multi-step plan, command workflow, or delegated role would coordinate existing capabilities better"
+          ],
+          "inspect_first": [
+            ".pi/prompts"
+          ],
+          "boundary": "Workflow coordinates existing capabilities; it does not create a new provider, hidden-test channel, or uncontrolled recursive process."
+        }
+      }
+    ],
+    "fixed_or_generated_patterns": [
+      "package.json",
+      "package-lock.json",
+      "npm-shrinkwrap.json",
+      "**/package.json",
+      "**/package-lock.json",
+      "**/npm-shrinkwrap.json",
+      "**/dist/**",
+      "**/node_modules/**",
+      ".git/**",
+      "settings/build/**"
+    ],
+    "frozen_source_patterns": [
+      "packages/coding-agent/src/core/model-config.ts",
+      "packages/coding-agent/src/core/model-registry.ts",
+      "packages/coding-agent/src/core/model-resolver.ts",
+      "packages/coding-agent/src/core/models-store.ts",
+      "packages/coding-agent/src/core/provider-attribution.ts",
+      "packages/coding-agent/src/core/http-dispatcher.ts",
+      "packages/coding-agent/src/core/remote-catalog-provider.ts",
+      "packages/coding-agent/src/cli.ts",
+      "packages/coding-agent/src/cli/args.ts",
+      "packages/coding-agent/src/cli/config-selector.ts",
+      "packages/coding-agent/src/cli/file-processor.ts",
+      "packages/coding-agent/src/cli/list-models.ts",
+      "packages/coding-agent/src/cli/project-trust.ts",
+      "packages/coding-agent/src/cli/session-picker.ts",
+      "packages/coding-agent/src/cli/startup-ui.ts",
+      "packages/coding-agent/src/main.ts",
+      "packages/coding-agent/src/rpc-entry.ts",
+      "packages/coding-agent/src/modes/print-mode.ts",
+      "packages/coding-agent/src/modes/rpc/**",
+      "packages/coding-agent/src/modes/interactive/**",
+      "packages/coding-agent/src/core/output-guard.ts",
+      "packages/ai/src/index.ts",
+      "packages/ai/src/models.ts",
+      "packages/ai/src/models.generated.ts",
+      "packages/ai/src/models-store.ts",
+      "packages/ai/src/providers/**",
+      "packages/ai/src/api/*.lazy.ts",
+      "packages/ai/src/api/lazy.ts"
+    ]
+  },
+  "qualification_task": null,
+  "edit_surface": null,
+  "controller_owned": [
+    "git_commit_and_refs",
+    "clean_build_and_smoke",
+    "performance_gate",
+    "accept_reject_and_rollback",
+    "training_cache",
+    "ablation_materialization"
+  ],
+  "required_behavior": [
+    "inspect failure evidence before editing",
+    "read /app/meta-workbench/docs/pi/overview.md and every plausible linked Pi module guide before selecting the physical edit owner",
+    "read the full training opportunity index, including successful and failed trajectories and within-task contrasts, when one is provided",
+    "read the layered training analysis and evolution history before raw trajectories or source files",
+    "before implementing any edit, use the read tool on every raw trajectory of every task that has at least one failing rollout; for a partial-pass task read all of its repeats, passing and failing alike, and generalize the contrasted causes into failure categories before choosing the harness change; detail reports are not substitutes",
+    "treat candidate_id, change_id, run names, directory names, and diagnostic labels as opaque audit identifiers with no causal meaning",
+    "for Pi source evolution, use the same Meta-agent session to analyze deterministic action/verifier evidence before editing; no separate LLM Debugger selects the root cause",
+    "complete causal check 1/6: identify one exact failed task repeat, one concrete wrong assistant action or judgment, its external-verifier consequence, and the same-task passing contrast when available",
+    "complete causal check 2/6: cite trajectory evidence that the proposed mechanism's runtime trigger actually occurred before the failure",
+    "complete causal check 3/6: verify that the selected source or shared component is reached by the default Pi task-agent execution path used in RSIBench",
+    "complete causal check 4/6: if the diff adds an API, callback, hook, option, or branch, include and identify its actual default-path consumer in the same cumulative diff",
+    "complete causal check 5/6: state exactly what model-visible observation, retained context, tool behavior, decision, or recovery would differ at the cited moment and why the verifier outcome would change",
+    "complete causal check 6/6: name a targeted check on the cited training task that would falsify the causal claim; a build or CLI smoke alone is not performance evidence",
+    "require root_cause and mechanism to explain the cited wrong action and same-task passing behavior; reject unrelated generally useful runtime improvements",
+    "encode the causal admission citation in failure_evidence as task=<id>; failure_repeat=<n>; action=<action_NN plus the specific action or judgment>; verifier=<observed consequence>; pass_repeat=<n|none>",
+    "treat a targeted-training gate rejection as a falsified mechanism, not an invitation to move or rephrase it in another file",
+    "on later rounds, read attempts[].performance_feedback and nested performance_attempts in evolution-history.json; these are prior candidate-only train x3 scores returned to the same recursive Meta-agent, while test trajectories remain withheld",
+    "use archive-index.json as the canonical path map for baseline training rollouts, candidate source snapshots, candidate target rollouts, and post-validation reflections",
+    "after each candidate-only targeted train pass@3 run, the same Meta-agent session must judge source loading/triggering, predicted rollout behavior, and causal score lift versus sampling noise",
+    "when a candidate does not causally improve its targets, archive a reflection that distinguishes implementation fault, ineffective hypothesis, and inconclusive measurement; the next round reads it through evolution-history",
+    "before proposing the next edit, for a prior rejected candidate open its raw target-validation rollout trajectories under candidates/<candidate_id>/attempt-XX/target-validation/rollouts/ per archive-index.json's candidate_target_validation layout; performance_feedback and reflection text are not substitutes for the rollout itself",
+    "describe the causal mechanism in free text; do not route edits through a controller-defined semantic taxonomy",
+    "after one SHARED_PROMPT performance rejection, do not submit another SHARED_PROMPT edit in this experiment",
+    "read module_catalog.developer_guide and the developer_guidance for every plausible source module before choosing a module",
+    "optimize for the largest expected downstream score gain supported by trajectories; patch size and rebuild cost are secondary",
+    "compare the strongest source-level candidate with the corresponding shared-resource mechanism and choose the highest-leverage causal intervention supported by evidence",
+    "for Pi, source edits may add new generalizable capabilities and runtime mechanisms; they are not limited to repairing demonstrably broken code",
+    "use prompt, rules, or skills when the evidence shows genuinely missing guidance, policy, knowledge, or a reusable textual procedure",
+    "do not choose prompt, rules, or skills merely because they avoid a source rebuild",
+    "use prompt, rules, or skills only when a within-task contrast, cross-task pattern, or accepted-change follow-up demonstrates missing guidance",
+    "state predicted fixes and regression risks so the next round can falsify the change using task-level flips",
+    "edit only files owned by declared modules in candidate_worktree",
+    "do not edit dist, dependencies, lockfiles, frozen source, tests, or evaluator",
+    "return submit only when the worktree has a real candidate Git diff",
+    "no_change and abstain are not valid responses",
+    "when previous_validation_feedback reports a fixed training-task candidate self-test, read its staged evidence and trajectory, judge each causal objective against the observed behavior, and either preserve the supported cumulative diff or revise falsified objectives before resubmitting",
+    "read previous_submission on repair attempts and preserve its causal contract unless the cumulative source diff itself changes",
+    "submit only the causal contract; the controller derives all changed files and physical module ownership from the cumulative Git diff",
+    "repair attempts continue in the same cumulative candidate worktree and are not automatically reset",
+    "the submit manifest must cover the complete cumulative Git diff against accepted_commit, not only files edited in the latest attempt",
+    "run the frozen in-sandbox candidate checker after the final edit and fix every compile, load, or smoke failure before submitting",
+    "external candidate validation is a final independent verdict and is not returned for another repair turn",
+    "a candidate may contain multiple independent causal objectives when each is separately grounded in training trajectories and the combined change has the highest expected downstream gain",
+    "do not force unrelated task failures into one cross-task mechanism; enumerate each objective and map its evidence, intervention, predicted fixes, risks, and targeted checks in the causal contract",
+    "set evidence_basis=multiple_independent_objectives when the candidate contains more than one independently supported causal objective",
+    "each causal objective may modify multiple physical modules in the same layer when its runtime mechanism requires coordinated edits",
+    "the controller derives the authoritative files, layer, rebuild requirement, and physical modules from the cumulative Git diff"
+  ]
+}

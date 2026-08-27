@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "change_id": "round-04-incremental-work-prompt-guidance",
+  "layer": "shared_resource",
+  "primary_module": "SHARED_PROMPT",
+  "compound_modules": [],
+  "files": [
+    ".pi/APPEND_SYSTEM.md"
+  ],
+  "requires_rebuild": false,
+  "failure_evidence": [
+    "task=terminal-bench-configure-git-webserver; failure_repeat=0; action=action_30 cleanup `rm -rf /var/www/html/*` and `git update-ref -d refs/heads/master` after the pushed hello.html had been verified via curl, then action_35 declared completion with the webroot emptied; verifier=curl <REDACTED_PRIVATE_ENDPOINT> returned HTTP 404 (reward 0); pass_repeat=1,2 (both left deployed content in place); trajectory=/app/pi-source-evidence/references/866ea1ce2f85adf0-trajectory.jsonl",
+    "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=0; action=action_05 the generation after the Rscript-check tool result at t+97.9s was attempted as one monolithic turn, never completed within the remaining ~800s of the 900s budget, and /app/ars.R was never persisted; verifier=reward 0 (required module missing); pass_repeat=2 (the equivalent monolithic write turn took 662s and finished 120s before the kill); trajectories=/app/pi-source-evidence/references/13a4d2940be6982b-trajectory.jsonl (fail) vs /app/pi-source-evidence/references/8c982212f5784400-trajectory.jsonl (pass)",
+    "task=terminal-bench-write-compressor; failure_repeat=1; action=turn 2 was a single 305s/15114-token generation and the following monolithic design generation never completed before the 900s kill, leaving no compressor artifact on disk; verifier=compressed-file check failed (reward 0); pass_repeat=0,2; trajectory=/app/pi-source-evidence/references/9f2187481fbd762d-trajectory.jsonl",
+    "aggregate: 18 of 23 failed trajectories end at AgentTimeoutError with deliverables unwritten or incomplete (headless-terminal r0, tune-mjcf r1/r2, model-extraction-relu-logits r2, gcode-to-text r0-r2, cobol-modernization r0-r2, build-cython-ext r1/r2, largest-eigenval r0/r1, make-mips-interpreter r0/r2); evolution-history round-01 (stream wall-clock cap plus resume, 0.489->0.222) and round-02 (injected pacing footers/notices, 0.489->0.178) were both performance-rejected: /app/pi-source-evidence/references/6a634ef8a33cdf4d-evolution-history.json, /app/pi-source-evidence/references/21ecfe84bcdd3684-training-opportunity-index.json, /app/pi-source-evidence/references/c151c3a83873ceac-training-failures.json"
+  ],
+  "root_cause": "The task agent lacks durable working discipline under a hard wall-clock budget: it (a) attempts solutions as single monolithic generations whose entire streamed output is lost when the external deadline kills the run mid-generation, (b) iterates without persisting required deliverables to their target paths, and (c) treats verified output artifacts as disposable test data during cleanup (configure-git-webserver r0 deleted the deployed hello.html it had just verified, causing the verifier's 404). These are absent general strategies, not broken runtime execution; the two source-level mechanisms previously tried against the same timeout pattern were measured as catastrophic regressions.",
+  "mechanism": "Extend .pi/APPEND_SYSTEM.md (SHARED_PROMPT, appended to the system prompt on the default Pi task-agent execution path; the original guidance text is preserved verbatim) with four concise task-agnostic working-discipline bullets: (1) work incrementally in short tool-called steps instead of one long monolithic reply, building large files from smaller verifiable pieces, so no single generation can consume the whole budget; (2) persist deliverables to their required paths as soon as a working version exists and iterate on them in place, since the final filesystem state is what gets verified; (3) before ending, re-check the exact output contract in the task statement (paths, formats, units, expected values) and run the evaluation or test the task provides; (4) when end-to-end testing or cleanup replaced required artifacts, restore the required final state and leave verified deliverables in place. Being static system-prompt text, it injects no mid-run messages and changes no stream, tool-result, or provider behavior for running sessions.",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "rollback_and_pivot",
+  "why_this_component": "SHARED_PROMPT (.pi/APPEND_SYSTEM.md) is the shared resource carrying global strategy guidance loaded on every default-path Pi task run (the .pi workspace is verifiably active in the training trajectories, e.g. the verify-work skill is read by agents). The causal defect is genuinely missing general task guidance/habits, which is exactly SHARED_PROMPT's documented scope, and the layer is not mixed: the change set touches only shared resources, no Source-12 files. Both plausible Source-12 alternatives were already falsified by measurement (round-01 provider-stream cap and round-02 runtime message injection each dropped the training mean by roughly 0.27-0.31 by disrupting currently-passing runs), leaving static prompt guidance as the only layer-consistent causal lever.",
+  "predicted_fixes": [
+    "Stall repeats now commit artifacts before the kill: terminal-bench-adaptive-rejection-sampler r0/r1, terminal-bench-headless-terminal r0, terminal-bench-tune-mjcf r1, terminal-bench-write-compressor r1, terminal-bench-model-extraction-relu-logits r2 become plausible fail-to-pass flips because work splits into incremental tool-called steps with files written early instead of one budget-filling generation",
+    "terminal-bench-configure-git-webserver r0: the restore-final-state and output-contract guidance prevents deleting the deployed hello.html after end-to-end testing, so the verifier's curl returns 200 instead of 404",
+    "Budget-burning repeats (terminal-bench-gcode-to-text r0-r2, terminal-bench-cobol-modernization r0-r2, terminal-bench-build-cython-ext r1/r2, terminal-bench-largest-eigenval r0/r1, terminal-bench-tune-mjcf r2, terminal-bench-make-mips-interpreter r0/r2) reach the deadline with valid committed deliverables instead of empty or incomplete state"
+  ],
+  "regression_risks": [
+    "Every run receives roughly 120 extra words of system prompt, which may slightly shift model behavior or prompt-cache locality on currently-passing tasks; regression watch: terminal-bench-sanitize-git-repo, terminal-bench-regex-log, terminal-bench-qemu-alpine-ssh, terminal-bench-model-extraction-relu-logits r0/r1, terminal-bench-configure-git-webserver r1/r2 must stay green",
+    "Persist-early guidance can add a few extra tool calls per run, costing wall-clock time on tasks that already passed near the budget edge",
+    "Guidance alone may not make the hardest budget-bound tasks (gcode-to-text, cobol-modernization) converge, so they may remain 0/3 without offsetting the gains elsewhere"
+  ],
+  "targeted_checks": [
+    "resource-preflight",
+    "prompt-load-smoke",
+    "task-flip watch: terminal-bench-adaptive-rejection-sampler, terminal-bench-headless-terminal, terminal-bench-write-compressor, terminal-bench-tune-mjcf, terminal-bench-model-extraction-relu-logits failing repeats should produce their required artifact files before the 900s kill; falsifier: they still die with zero deliverables on disk",
+    "task-flip watch: terminal-bench-configure-git-webserver r0 verifier curl of /hello.html should return 200; falsifier: still 404 after cleanup",
+    "regression watch: always-passing terminal-bench-sanitize-git-repo, terminal-bench-regex-log, terminal-bench-qemu-alpine-ssh must not regress, which would indicate the added prompt text derails normal runs the way round-02's injected messages did"
+  ],
+  "analysis_tags": [
+    "shared-prompt",
+    "working-discipline",
+    "incremental-actions",
+    "persist-deliverables-early",
+    "monolithic-generation-timeout",
+    "destructive-cleanup",
+    "restore-final-state",
+    "cross-task-pattern",
+    "SHARED_PROMPT",
+    "pivot-from-rejected-runtime-mechanisms"
+  ]
+}

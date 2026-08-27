@@ -1,0 +1,170 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 3a12506..10e7351 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -92,6 +92,28 @@ export function agentLoopContinue(
+ 	return stream;
+ }
+ 
++/**
++ * Upper bound on consecutive checkpoint resumes after length-truncated turns.
++ *
++ * A response cut short by the output token limit or by the provider
++ * wall-clock deadline (PI_STREAM_MAX_DURATION_MS in pi-ai) keeps its partial
++ * content and stopReason "length". When such a turn contains no tool calls
++ * there is nothing to execute, so the loop would otherwise end the run
++ * mid-task with the truncation unacknowledged; asking the model to resume
++ * from the checkpoint lets it keep building on the preserved partial output
++ * in bounded increments. The cap bounds pathological repetition.
++ */
++const MAX_LENGTH_CONTINUATIONS = 5;
++
++const LENGTH_CONTINUATION_PROMPT =
++	"Your previous response was cut off before it completed (single-response limit reached); its partial content is preserved above. " +
++	"Resume immediately with your next action: make concrete tool calls now — write or edit files in smaller increments and run checks — " +
++	"instead of restarting long reasoning or regenerating large content in one shot.";
++
++function createLengthContinuationMessage(): AgentMessage {
++	return { role: "user", content: LENGTH_CONTINUATION_PROMPT, timestamp: Date.now() };
++}
++
+ export async function runAgentLoop(
+ 	prompts: AgentMessage[],
+ 	context: AgentContext,
+@@ -166,6 +188,11 @@ async function runLoop(
+ 	// Check for steering messages at start (user may have typed while waiting)
+ 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
+ 
++	// Consecutive checkpoint resumes after bare "length" turns (see
++	// MAX_LENGTH_CONTINUATIONS). Reset whenever a turn completes normally or
++	// yields tool calls.
++	let lengthContinuationCount = 0;
++
+ 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
+ 	while (true) {
+ 		let hasMoreToolCalls = true;
+@@ -202,6 +229,23 @@ async function runLoop(
+ 			// Check for tool calls
+ 			const toolCalls = message.content.filter((c) => c.type === "toolCall");
+ 
++			// A length-truncated turn (token limit, or the provider wall-clock
++			// deadline that salvages an overlong single response) already had its
++			// partial content persisted above. With no tool calls there is nothing
++			// to execute and the run would silently end mid-task; resume from the
++			// checkpoint instead so the model continues in bounded increments. The
++			// resume cap keeps pathological repetition from running forever.
++			if (message.stopReason === "length" && toolCalls.length === 0) {
++				if (lengthContinuationCount < MAX_LENGTH_CONTINUATIONS) {
++					lengthContinuationCount++;
++					await emit({ type: "turn_end", message, toolResults: [] });
++					pendingMessages = [createLengthContinuationMessage()];
++					continue;
++				}
++			} else {
++				lengthContinuationCount = 0;
++			}
++
+ 			const toolResults: ToolResultMessage[] = [];
+ 			hasMoreToolCalls = false;
+ 			if (toolCalls.length > 0) {
+diff --git a/packages/ai/src/api/openai-completions.ts b/packages/ai/src/api/openai-completions.ts
+index 5c4cfcc..3b67216 100644
+--- a/packages/ai/src/api/openai-completions.ts
++++ b/packages/ai/src/api/openai-completions.ts
+@@ -255,6 +255,35 @@ function describeStreamIdleTimeout(idleMs: number): string {
+ 	return `Provider stream idle timeout: no response data received for ${Math.ceil(idleMs / 1000)}s. The connection appears stalled; retrying the request.`;
+ }
+ 
++/**
++ * Default wall-clock budget for a single streamed response, in milliseconds.
++ *
++ * The idle watchdog above only fires when *no* data arrives; it cannot catch
++ * the opposite failure: a live, continuously streaming response whose
++ * generation is simply too long for the remaining task budget. In timed agent
++ * runs a single overlong response can monopolize the whole run — observed as
++ * one turn streaming >600s of output inside a 900s budget, never finishing,
++ * with all of its content discarded. When this deadline trips, the in-flight
++ * request is aborted and whatever partial content already streamed is
++ * finalized as a length-truncated message instead of an error, so the agent
++ * loop resumes the turn from that checkpoint instead of losing the whole
++ * pending generation. Override the 300s default with
++ * PI_STREAM_MAX_DURATION_MS (0 disables).
++ */
++const DEFAULT_STREAM_MAX_DURATION_MS = 300_000;
++
++function resolveStreamMaxDurationMs(env: ProviderEnv | undefined): number {
++	const raw = getProviderEnvValue("PI_STREAM_MAX_DURATION_MS", env);
++	if (raw === undefined) return DEFAULT_STREAM_MAX_DURATION_MS;
++	const parsed = Number(raw);
++	if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_STREAM_MAX_DURATION_MS;
++	return parsed;
++}
++
++function describeStreamMaxDuration(maxDurationMs: number): string {
++	return `Single response exceeded the ${Math.ceil(maxDurationMs / 1000)}s wall-clock budget for one generation; its partial output was kept and the turn resumes from that checkpoint.`;
++}
++
+ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptions> = (
+ 	model: Model<"openai-completions">,
+ 	context: Context,
+@@ -283,7 +312,12 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
+ 
+ 		const idleMs = resolveStreamIdleTimeoutMs(options?.env) * [1, 1.6, 2][Math.min(consecutiveStreamIdleTimeouts, 2)]!;
+ 		const idle = createStreamIdleWatchdog(idleMs);
+-		const combined = combineAbortSignals([options?.signal, idle.signal]);
++		// One-shot deadline bounding the total wall time of one response, even
++		// while chunks keep arriving (unlike the idle watchdog it never resets).
++		// Its abort triggers the length-resume salvage path in catch below.
++		const maxDurationMs = resolveStreamMaxDurationMs(options?.env);
++		const duration = createStreamIdleWatchdog(maxDurationMs);
++		const combined = combineAbortSignals([options?.signal, idle.signal, duration.signal]);
+ 
+ 		try {
+ 			const apiKey = <REDACTED_CREDENTIAL>, options?.apiKey, options?.headers);
+@@ -629,6 +663,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
+ 			}
+ 
+ 			idle.cleanup();
++			duration.cleanup();
+ 			combined.cleanup();
+ 			consecutiveStreamIdleTimeouts = 0;
+ 			for (const block of blocks) {
+@@ -652,14 +687,38 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
+ 			stream.end();
+ 		} catch (error) {
+ 			idle.cleanup();
++			duration.cleanup();
+ 			combined.cleanup();
++			// The wall-clock deadline fired mid-response: the request was aborted by
++			// our own deadline, not by the caller and not by a dead connection.
++			// Salvage every partial block as a length-truncated message so the agent
++			// loop treats it like a token-limit truncation: tool-call arguments are
++			// recovered best-effort, the partial text/thinking stays in context, and
++			// the model resumes the turn from that checkpoint. Previously the
++			// pending response silently consumed the remaining task budget and was
++			// then discarded wholesale.
++			const salvagedAsLength =
++				duration.signal?.aborted === true && !options?.signal?.aborted && !idle.signal?.aborted;
+ 			for (const block of output.content) {
++				if (salvagedAsLength && block.type === "toolCall") {
++					const partialArgs = (block as { partialArgs?: string }).partialArgs;
++					if (typeof partialArgs === "string" && partialArgs.length > 0) {
++						block.arguments = parseStreamingJson(partialArgs);
++					}
++				}
+ 				delete (block as { index?: number }).index;
+ 				// Streaming scratch buffers are only used during parsing; never persist them.
+ 				delete (block as { partialArgs?: string }).partialArgs;
+ 				delete (block as { customInput?: unknown }).customInput;
+ 				delete (block as { streamIndex?: number }).streamIndex;
+ 			}
++			if (salvagedAsLength) {
++				output.stopReason = "length";
++				output.errorMessage = describeStreamMaxDuration(maxDurationMs);
++				stream.push({ type: "done", reason: output.stopReason, message: output });
++				stream.end();
++				return;
++			}
+ 			if (options?.signal?.aborted) {
+ 				output.stopReason = "aborted";
+ 				output.errorMessage = formatProviderError(normalizeProviderError(error));
