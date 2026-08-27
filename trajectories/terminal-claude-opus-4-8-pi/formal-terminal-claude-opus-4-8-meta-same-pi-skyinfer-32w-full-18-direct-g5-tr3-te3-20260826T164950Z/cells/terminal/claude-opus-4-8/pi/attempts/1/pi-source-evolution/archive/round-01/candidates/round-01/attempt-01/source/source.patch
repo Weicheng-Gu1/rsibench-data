@@ -1,0 +1,128 @@
+diff --git a/packages/agent/src/harness/agent-harness.ts b/packages/agent/src/harness/agent-harness.ts
+index cbc2d0a..1ef2a6d 100644
+--- a/packages/agent/src/harness/agent-harness.ts
++++ b/packages/agent/src/harness/agent-harness.ts
+@@ -46,6 +46,65 @@ import type {
+ } from "./types.ts";
+ import { AgentHarnessError, BranchSummaryError, CompactionError, SessionError, toError } from "./types.ts";
+ 
++/**
++ * How much wall-clock time before the configured deadline the finalization
++ * steering message should be injected. Chosen to leave enough room for the
++ * agent to write out and verify its best solution before a hard kill.
++ */
++const DEADLINE_WARNING_THRESHOLD_MS = (() => {
++	const raw = Number(process.env.PI_AGENT_DEADLINE_WARNING_SECONDS);
++	if (Number.isFinite(raw) && raw > 0) return Math.round(raw * 1000);
++	return 120_000;
++})();
++
++/**
++ * Resolve an absolute wall-clock deadline (epoch ms) from the environment.
++ *
++ * Supports either an absolute epoch deadline (`PI_AGENT_DEADLINE_MS`) or a
++ * relative budget from now (`PI_AGENT_TIME_LIMIT_SECONDS`). When neither is set
++ * but the process is running as a non-interactive coding-agent under a managed
++ * benchmark/provider (which enforces a hard external wall-clock timeout), fall
++ * back to a conservative default budget measured from process start so the agent
++ * still gets a chance to persist its best solution before it is killed. Set
++ * `PI_AGENT_TIME_LIMIT_SECONDS=0` (or `PI_AGENT_DISABLE_DEADLINE=1`) to disable.
++ */
++function resolveDeadlineEpochMs(): number | undefined {
++	if (process.env.PI_AGENT_DISABLE_DEADLINE === "1") return undefined;
++	const absolute = Number(process.env.PI_AGENT_DEADLINE_MS);
++	if (Number.isFinite(absolute) && absolute > 0) return absolute;
++	if (process.env.PI_AGENT_TIME_LIMIT_SECONDS !== undefined) {
++		const limitSeconds = Number(process.env.PI_AGENT_TIME_LIMIT_SECONDS);
++		if (Number.isFinite(limitSeconds) && limitSeconds > 0) {
++			return processStartEpochMs() + Math.round(limitSeconds * 1000);
++		}
++		return undefined;
++	}
++	// Default: only arm when running as a managed coding-agent (never for the
++	// version smoke or ad-hoc SDK embeds), using a conservative budget that stays
++	// safely under the smallest common harness timeout.
++	if (process.env.PI_CODING_AGENT === "true" && process.env.PI_PROVIDER) {
++		return processStartEpochMs() + DEFAULT_CODING_AGENT_BUDGET_MS;
++	}
++	return undefined;
++}
++
++/** Epoch-ms timestamp of when the current Node process started. */
++function processStartEpochMs(): number {
++	return Date.now() - Math.round(process.uptime() * 1000);
++}
++
++/**
++ * Conservative default wall-clock budget for a managed coding-agent run when no
++ * explicit deadline is configured. Kept below the smallest common external
++ * harness timeout so the finalization notice arrives while there is still time
++ * to write and verify the solution. Overridable via `PI_AGENT_TIME_LIMIT_SECONDS`.
++ */
++const DEFAULT_CODING_AGENT_BUDGET_MS = (() => {
++	const raw = Number(process.env.PI_AGENT_DEFAULT_BUDGET_SECONDS);
++	if (Number.isFinite(raw) && raw > 0) return Math.round(raw * 1000);
++	return 840_000;
++})();
++
+ function createUserMessage(text: string, images?: ImageContent[]): UserMessage {
+ 	const content: Array<{ type: "text"; text: string } | ImageContent> = [{ type: "text", text }];
+ 	if (images) content.push(...images);
+@@ -195,6 +254,11 @@ export class AgentHarness<
+ 	private followUpQueueMode: QueueMode;
+ 	private nextTurnQueue: AgentMessage[] = [];
+ 	private handlers = new Map<string, Set<AgentHarnessHandler>>();
++	// Deadline-aware finalization: when a wall-clock time budget is configured
++	// (via env), inject a one-time steering message that tells the agent to stop
++	// exploring and persist its best-known solution before the run is killed.
++	private readonly deadlineEpochMs: number | undefined = resolveDeadlineEpochMs();
++	private deadlineWarningInjected = false;
+ 
+ 	constructor(options: AgentHarnessOptions<TContext, TSkill, TPromptTemplate, TTool>) {
+ 		this.session = options.session;
+@@ -427,6 +491,32 @@ export class AgentHarness<
+ 		};
+ 	}
+ 
++	/**
++	 * Return a one-time deadline-finalization steering message when the configured
++	 * wall-clock budget is close to expiring. RSIBench (and other harnesses) kill a
++	 * run with a hard timeout; without any signal the agent keeps exploring and its
++	 * best-known solution is never persisted before the process is aborted. When a
++	 * deadline is configured and the remaining time drops below the threshold, we
++	 * inject a single synthetic user message instructing the agent to stop
++	 * exploring and write out its best solution now. Inert when no deadline env is
++	 * set, so default CLI behavior is unchanged.
++	 */
++	private buildDueDeadlineMessages(): UserMessage[] {
++		if (this.deadlineEpochMs === undefined || this.deadlineWarningInjected) return [];
++		const remainingMs = this.deadlineEpochMs - Date.now();
++		if (remainingMs > DEADLINE_WARNING_THRESHOLD_MS) return [];
++		this.deadlineWarningInjected = true;
++		const remainingSeconds = Math.max(0, Math.round(remainingMs / 1000));
++		return [
++			createUserMessage(
++				`SYSTEM NOTICE: Only about ${remainingSeconds} seconds of wall-clock time remain before this run is stopped. ` +
++					`Stop exploring or benchmarking new approaches now. Immediately finalize and persist your best working solution ` +
++					`to the required output location(s), then do a quick sanity check that it is saved. Do not start any new long-running ` +
++					`command that could exceed the remaining time.`,
++			),
++		];
++	}
++
+ 	private async drainQueuedMessages(queue: AgentMessage[], mode: QueueMode): Promise<AgentMessage[]> {
+ 		const messages = mode === "all" ? queue.splice(0) : queue.splice(0, 1);
+ 		if (messages.length === 0) return messages;
+@@ -492,7 +582,11 @@ export class AgentHarness<
+ 					thinkingLevel: nextTurnState.thinkingLevel,
+ 				};
+ 			},
+-			getSteeringMessages: async () => this.drainQueuedMessages(this.steerQueue, this.steeringQueueMode),
++			getSteeringMessages: async () => {
++				const deadlineMessages = this.buildDueDeadlineMessages();
++				const steering = await this.drainQueuedMessages(this.steerQueue, this.steeringQueueMode);
++				return deadlineMessages.length > 0 ? [...deadlineMessages, ...steering] : steering;
++			},
+ 			getFollowUpMessages: async () => this.drainQueuedMessages(this.followUpQueue, this.followUpQueueMode),
+ 		};
+ 	}

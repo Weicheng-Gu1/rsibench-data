@@ -1,0 +1,123 @@
+diff --git a/packages/agent/src/harness/agent-harness.ts b/packages/agent/src/harness/agent-harness.ts
+index cbc2d0a..db7afd6 100644
+--- a/packages/agent/src/harness/agent-harness.ts
++++ b/packages/agent/src/harness/agent-harness.ts
+@@ -46,6 +46,63 @@ import type {
+ } from "./types.ts";
+ import { AgentHarnessError, BranchSummaryError, CompactionError, SessionError, toError } from "./types.ts";
+ 
++const DEADLINE_FINALIZATION_MESSAGE =
++	"[system-notice] The wall-clock time budget for this task is nearly exhausted. " +
++	"Before doing anything else, make sure the task's required deliverable is actually written to " +
++	"the exact output path the task specified, using your current best-known solution even if it is " +
++	"not yet perfect. A partial-but-persisted answer scores better than a more complete answer that " +
++	"never gets saved because the run is terminated. After confirming the deliverable is on disk, you " +
++	"may keep improving it, re-saving as you go.";
++
++/**
++ * Resolve the absolute epoch milliseconds at which the external harness is expected to terminate
++ * this run, or undefined when no deadline-aware finalization should be armed.
++ *
++ * Precedence:
++ *  - PI_AGENT_DISABLE_DEADLINE=1 or PI_AGENT_TIME_LIMIT_SECONDS=0 -> disabled (undefined).
++ *  - PI_AGENT_DEADLINE_MS: absolute epoch-ms deadline (used verbatim).
++ *  - PI_AGENT_TIME_LIMIT_SECONDS: relative budget measured from runStartMs.
++ *  - Otherwise, for a managed coding-agent run (PI_CODING_AGENT truthy) fall back to a conservative
++ *    default budget (below the common external timeout) measured from runStartMs.
++ *  - Ad-hoc SDK embeds / version smoke (no managed signal, no explicit budget) stay disabled.
++ */
++function resolveDeadlineEpochMs(runStartMs: number, env: NodeJS.ProcessEnv = process.env): number | undefined {
++	if (env.PI_AGENT_DISABLE_DEADLINE === "1") return undefined;
++
++	const limitRaw = env.PI_AGENT_TIME_LIMIT_SECONDS;
++	if (limitRaw !== undefined && limitRaw !== "") {
++		const limit = Number(limitRaw);
++		if (Number.isFinite(limit)) {
++			if (limit <= 0) return undefined;
++			return runStartMs + limit * 1000;
++		}
++	}
++
++	const absRaw = env.PI_AGENT_DEADLINE_MS;
++	if (absRaw !== undefined && absRaw !== "") {
++		const abs = Number(absRaw);
++		if (Number.isFinite(abs) && abs > 0) return abs;
++	}
++
++	const managed = env.PI_CODING_AGENT === "true" || env.PI_CODING_AGENT === "1";
++	if (!managed) return undefined;
++
++	const defaultRaw = env.PI_AGENT_DEFAULT_TIME_LIMIT_SECONDS;
++	const defaultLimit = defaultRaw !== undefined && defaultRaw !== "" ? Number(defaultRaw) : 840;
++	if (!Number.isFinite(defaultLimit) || defaultLimit <= 0) return undefined;
++	return runStartMs + defaultLimit * 1000;
++}
++
++/** Warning threshold (ms of remaining budget) below which the finalization notice is due. */
++function resolveDeadlineWarningMs(env: NodeJS.ProcessEnv = process.env): number {
++	const raw = env.PI_AGENT_DEADLINE_WARNING_SECONDS;
++	if (raw !== undefined && raw !== "") {
++		const seconds = Number(raw);
++		if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
++	}
++	return 90 * 1000;
++}
++
+ function createUserMessage(text: string, images?: ImageContent[]): UserMessage {
+ 	const content: Array<{ type: "text"; text: string } | ImageContent> = [{ type: "text", text }];
+ 	if (images) content.push(...images);
+@@ -191,6 +248,8 @@ export class AgentHarness<
+ 	private activeToolNames: string[];
+ 	private steerQueue: UserMessage[] = [];
+ 	private steeringQueueMode: QueueMode;
++	private runStartMs = Date.now();
++	private deadlineFinalizationInjected = false;
+ 	private followUpQueue: UserMessage[] = [];
+ 	private followUpQueueMode: QueueMode;
+ 	private nextTurnQueue: AgentMessage[] = [];
+@@ -439,6 +498,23 @@ export class AgentHarness<
+ 		}
+ 	}
+ 
++	/**
++	 * Deadline-aware finalization steering. Returns a one-time synthetic user message that reminds the
++	 * model to persist its current best deliverable to the required output path when the external
++	 * wall-clock budget is nearly exhausted. Returns [] otherwise (including when no deadline is armed).
++	 * The notice is additive and non-halting: it never tells the model to stop working, only to make
++	 * sure a best-effort answer is on disk so a hard timeout does not discard all progress.
++	 */
++	private buildDueDeadlineMessages(): AgentMessage[] {
++		if (this.deadlineFinalizationInjected) return [];
++		const deadlineMs = resolveDeadlineEpochMs(this.runStartMs);
++		if (deadlineMs === undefined) return [];
++		const remaining = deadlineMs - Date.now();
++		if (remaining > resolveDeadlineWarningMs()) return [];
++		this.deadlineFinalizationInjected = true;
++		return [createUserMessage(DEADLINE_FINALIZATION_MESSAGE)];
++	}
++
+ 	private createLoopConfig(
+ 		getTurnState: () => AgentHarnessTurnState<TContext, TSkill, TPromptTemplate, TTool>,
+ 		setTurnState: (turnState: AgentHarnessTurnState<TContext, TSkill, TPromptTemplate, TTool>) => void,
+@@ -492,7 +568,11 @@ export class AgentHarness<
+ 					thinkingLevel: nextTurnState.thinkingLevel,
+ 				};
+ 			},
+-			getSteeringMessages: async () => this.drainQueuedMessages(this.steerQueue, this.steeringQueueMode),
++			getSteeringMessages: async () => {
++				const queued = await this.drainQueuedMessages(this.steerQueue, this.steeringQueueMode);
++				const deadlineMessages = this.buildDueDeadlineMessages();
++				return deadlineMessages.length > 0 ? [...deadlineMessages, ...queued] : queued;
++			},
+ 			getFollowUpMessages: async () => this.drainQueuedMessages(this.followUpQueue, this.followUpQueueMode),
+ 		};
+ 	}
+@@ -584,6 +664,8 @@ export class AgentHarness<
+ 		options?: { images?: ImageContent[] },
+ 	): Promise<AssistantMessage> {
+ 		let activeTurnState = turnState;
++		this.runStartMs = Date.now();
++		this.deadlineFinalizationInjected = false;
+ 		let messages: AgentMessage[] = [createUserMessage(text, options?.images)];
+ 		if (this.nextTurnQueue.length > 0) {
+ 			const queuedMessages = this.nextTurnQueue.splice(0);

@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Analysis of the frozen TRAIN evidence shows the dominant fixable failure cluster is wall-clock timeouts where the agent keeps exploring and is killed before ever persisting any deliverable to the task's required output path. This is grounded in complete rollouts: gcode-to-text (all 3 repeats) timed out with /app/out.txt never written; tune-mjcf failing repeat 1 discovered a passing solver (PGS Time pctg 0.51) at ~892s but hit the 900s wall before writing /app/model.xml, while passing repeat 2 wrote model.xml and stopped in time; qemu-alpine-ssh, configure-git-webserver, and write-compressor failing repeats show the same timeout-before-persist pattern. I explicitly excluded two non-harness signals: model-extraction-relu-logits (mechanism evidence proves the hidden verifier regenerates a different matrix, seed=5 randn(30,10)*0.3, than the deployed forward.py seed=0 randn(20,10)*0.1 — an unsolvable/broken verifier), and headless-terminal (mixed task whose failing repeat 0 used `bash -i -l`, a login shell that does not source ~/.bashrc, vs passing repeat 1's `bash -i` — implementation luck, not a durable harness target). Round-01 already attempted a blunt deadline steering nudge that told the agent to stop exploring; it netted exactly 0.0 (fail_to_pass configure-git-webserver+gcode, pass_to_fail on long tasks build-cython-ext/make-mips-interpreter/headless-terminal), so a halting command over-corrects long tasks. My mechanism differs by being non-halting and checkpoint-oriented: it fires once, later (90s remaining), only reminds the agent to ensure its current best deliverable is written to the exact required path while allowing it to keep working, and is env-gated to managed coding-agent runs (PI_CODING_AGENT=true, set on the RSIBench CLI/RPC default path). Candidate self-check passes npm-ci-offline, build-offline, and pi-cli-smoke.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "round-03-nonhalting-deadline-checkpoint",
+    "failure_evidence": [
+      "task=terminal-bench-tune-mjcf; failure_repeat=1; action=action_08 discovered PGS solver Time pctg 0.51 (a passing setting) near 892s then continued benchmarking instead of writing /app/model.xml; verifier=AgentTimeoutError after 900s with no model.xml persisted (reward 0.0); pass_repeat=2 (82547468cd57381d wrote model.xml and stopped in time)",
+      "task=terminal-bench-gcode-to-text; failure_repeat=2; action=explored gcode parsing for 766s and never wrote the required deliverable; verifier=test_hello_file_exists failed: /app/out.txt does not exist (reward 0.0); pass_repeat=none",
+      "task=terminal-bench-configure-git-webserver; failure_repeat=2; action=39 turns of exploration to 873s without a working persisted config; verifier=AgentTimeoutError timeout reward 0.0; pass_repeat=none",
+      "training_mean_reward=0.555556",
+      "failed_or_partial_trajectories=20",
+      "/app/pi-source-evidence/references/a1867be15e7b3daf-training-opportunity-index.json",
+      "/app/pi-source-evidence/references/613b22be1cdb5212-training-failures.json",
+      "/app/pi-source-evidence/references/89933b4193c7bfa3-pi-mechanism-evidence.json"
+    ],
+    "root_cause": "The agent has no runtime awareness of the external hard wall-clock timeout enforced by the harness. On long tasks it keeps exploring, benchmarking, or refining and is terminated before persisting its best-known solution to the task's required output path; in several failing rollouts no deliverable is written at all (gcode-to-text) or a solution known to pass is discovered but never saved (tune-mjcf repeat 1). Passing repeats of the same tasks differ only in that they wrote the deliverable and stopped in time.",
+    "mechanism": "Add a non-halting, checkpoint-oriented deadline-finalization steering signal to AgentHarness (packages/agent/src/harness/agent-harness.ts). resolveDeadlineEpochMs() reads an absolute (PI_AGENT_DEADLINE_MS) or relative (PI_AGENT_TIME_LIMIT_SECONDS) budget from the environment, and for a managed coding-agent run (PI_CODING_AGENT truthy) falls back to a conservative default budget (840s, overridable) measured from the per-run start (runStartMs, reset at executeTurn). getSteeringMessages — the agent-loop's per-turn steering poll that runs on every default-path run — calls buildDueDeadlineMessages(), which once, when remaining time drops below the threshold (default 90s), prepends a synthetic user message instructing the agent to ensure its required deliverable is written to the exact output path with its current best solution, explicitly allowing it to keep improving afterward. It is disabled by PI_AGENT_DISABLE_DEADLINE=1 or PI_AGENT_TIME_LIMIT_SECONDS=0 and is inert for ad-hoc SDK embeds and the version smoke (no managed signal, no explicit budget).",
+    "evidence_basis": "cross_task_pattern",
+    "prior_attempt_disposition": "improve_accepted",
+    "why_this_component": "getSteeringMessages is owned by the agent harness and is the sole default-path per-turn injection point polled by runAgentLoop after every turn, so a deadline-triggered message reaches the model at the exact turn boundary where failing repeats kept exploring. The default path sets PI_CODING_AGENT=true in packages/coding-agent/src/cli.ts and rpc-entry.ts, so the mechanism is reachable in RSIBench and its default-path consumer (getSteeringMessages calling buildDueDeadlineMessages) is included in the same diff. Task guidance (SHARED_PROMPT/RULES) cannot help because the agent lacks the runtime time-remaining signal; this is a runtime turn-control capability explicitly permitted for PI_SRC_HARNESS_RUNTIME. It improves on round-01's rejected blunt nudge by being non-halting (persist-and-continue, not stop) and firing later, which targets the never-persisted timeouts without prematurely concluding the genuinely long tasks (build-cython-ext, make-mips-interpreter) that round-01 regressed.",
+    "predicted_fixes": [
+      "terminal-bench-tune-mjcf: near the deadline the agent is reminded to write /app/model.xml with its already-found passing PGS solver setting before the hard kill, converting timeout repeat 1 into a pass",
+      "terminal-bench-gcode-to-text and terminal-bench-configure-git-webserver: the agent persists its current best deliverable to the required output path instead of being terminated with nothing on disk",
+      "Long tasks generally: reduces never-persisted timeout failures without halting tasks that legitimately need many turns, since the notice permits continued work after checkpointing"
+    ],
+    "regression_risks": [
+      "A checkpoint reminder that fires while a long task is mid-productive-work could cost one turn of attention; mitigated by firing at most once and only within the final 90s, and by non-halting wording that permits continued improvement (unlike round-01's stop-and-finalize which regressed build-cython-ext/make-mips-interpreter)",
+      "The default 840s budget assumes a ~900s+ external timeout; for much shorter external timeouts the notice may fire late, but it remains a one-time additive hint that cannot make a run worse than an un-warned timeout",
+      "On environments with no external timeout the default arms only for managed coding-agent runs and is disable-able via PI_AGENT_DISABLE_DEADLINE=1 or PI_AGENT_TIME_LIMIT_SECONDS=0"
+    ],
+    "targeted_checks": [
+      "agent-harness",
+      "On terminal-bench-tune-mjcf repeat that previously timed out, confirm the deadline checkpoint message is injected in the final 90s and /app/model.xml is written before the hard timeout; a pass flip corroborates and no flip (or a new pass_to_fail on build-cython-ext/make-mips-interpreter) falsifies the causal claim"
+    ],
+    "analysis_tags": [
+      "deadline-aware-turn-control",
+      "non-halting-checkpoint",
+      "timeout-driven-failures",
+      "persist-best-deliverable",
+      "steering-injection",
+      "harness-runtime"
+    ]
+  }
+}

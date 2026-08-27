@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "change_id": "round-05-verification-discipline-antioverfit-prompt",
+  "failure_evidence": [
+    "task=terminal-bench-model-extraction-relu-logits; failure_repeat=0; action=action_11/13 judged success from a self-invented check that imported ground-truth `from forward import A1` and asserted cosine~1.0 for a hardcoded 20-neuron/seed-0 extraction; verifier=test_outputs.py re-ran steal.py against seed(5) 30x10 network and reported 'Failed to match rows: [0,1,2,4,11,12,15,17,18,19,21,22,28]' (reward 0.0); pass_repeat=none",
+    "task=terminal-bench-raman-fitting; failure_repeat=0; action=finalized results.json with G x0=10432 while task/grader expected x0=1580.3 without reconciling the units mismatch; verifier=test_G_Peak/test_2D_Peak assertion failures (reward 0.0); pass_repeat=none",
+    "/app/pi-source-evidence/references/4041872ecc217f76-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/97e12b0aa38f3fcf-training-failures.json",
+    "training_mean_reward=0.555556",
+    "failed_or_partial_trajectories=20"
+  ],
+  "root_cause": "The default task agent concludes tasks based on self-constructed verification and overfits to the single instance it can observe. In model-extraction-relu-logits it confirmed correctness by importing the live network's own weights and matching a hardcoded 20-neuron solution, then declared victory; the external grader re-runs the script against a different network (seed 5, 30 neurons), which the instance-specific script cannot satisfy, and it never located or ran the actual /tests acceptance suite present in the sandbox. raman-fitting shows the same class: it finalized an interpretation whose numbers contradicted the task's expected ranges without treating the mismatch as a red flag.",
+  "mechanism": "Add a durable 'Verifying your work before you finish' habit to the default system prompt built by buildSystemPrompt (packages/coding-agent/src/core/system-prompt.ts). It instructs the agent to (1) find and directly run the environment's own acceptance criteria/tests (./tests, /tests, test_*.py, *_test.py, Makefile targets, or a stated command) and run exactly what the grader would run instead of a self-invented check; (2) write general solutions graded by re-running against different/hidden inputs — infer sizes, counts, and shapes at runtime, never hardcode values read off the current instance, and never rely on privileged ground-truth access unavailable at grading time; (3) treat mismatches with stated units/ranges/examples as a signal to re-examine assumptions before finalizing. This text is emitted only in the default (non-custom) prompt branch, which is the branch used by RSIBench default task runs.",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "rollback_and_pivot",
+  "why_this_component": "buildSystemPrompt in core/system-prompt.ts is the default-path assembler of the task agent's system prompt: agent-session.ts _rebuildSystemPrompt calls it for every managed coding-agent run, so the habit reaches the model on every default RSIBench task without any custom prompt, hook, or new API. The defect is a missing generalizable decision/verification habit in the agent's own instructions rather than broken loading, tool execution, or provider wiring, so PI_SRC_PROMPT_LOADER (which owns system-prompt.ts) is the correct source owner. Prior HARNESS_RUNTIME deadline nudges (rounds 01/03) did not move the mean and regressed long tasks; the shared verify-skill round (04) was infrastructure-contaminated. The added consumer (the default prompt branch itself) is included in the same diff.",
+  "predicted_fixes": [
+    "terminal-bench-model-extraction-relu-logits: agent stops hardcoding N=20/seed-0 and self-confirming via `from forward import A1`; it infers neuron count at runtime and, where present, runs the real /tests, producing a script that survives the grader's seed-5 30-neuron re-run — flipping 0/3 toward passing",
+    "terminal-bench-raman-fitting: agent treats the disagreement between its fitted x0 and the graded/expected peak positions as a signal to revisit its axis interpretation, improving chances of the correct G/2D fit",
+    "Broadly: fewer premature 'complete' declarations across tasks where an acceptance test or grader re-run exists, raising mean training reward without task-specific answers"
+  ],
+  "regression_risks": [
+    "The added guidance could prompt the agent to spend turns searching for tests that do not exist on some tasks; mitigated by phrasing it as 'look for ... and run them directly' rather than a mandatory step, and by keeping it concise",
+    "On tasks with a genuine external wall-clock timeout, extra verification could cost time; mitigated because the guidance favors running the existing grader rather than building elaborate new checks",
+    "No effect on custom-prompt SDK embeds or the version smoke, since the text lives only in the default prompt branch"
+  ],
+  "targeted_checks": [
+    "prompt-loader",
+    "On terminal-bench-model-extraction-relu-logits, confirm the agent infers neuron count at runtime / runs the real acceptance test and its steal.py passes the grader's seed-5 30-neuron re-run; no flip on that task (or a new pass_to_fail elsewhere) falsifies the causal claim"
+  ],
+  "analysis_tags": [
+    "verification-discipline",
+    "anti-overfitting",
+    "run-the-real-tests",
+    "self-referential-verification",
+    "default-system-prompt",
+    "prompt-loader"
+  ]
+}

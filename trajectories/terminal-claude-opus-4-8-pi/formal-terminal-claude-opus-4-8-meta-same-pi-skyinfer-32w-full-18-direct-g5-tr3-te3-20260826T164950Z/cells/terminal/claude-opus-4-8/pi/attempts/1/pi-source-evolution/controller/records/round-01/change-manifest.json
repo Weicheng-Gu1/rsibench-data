@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "change_id": "round-01-deadline-aware-finalization",
+  "layer": "agent_core_source",
+  "primary_module": "PI_SRC_HARNESS_RUNTIME",
+  "compound_modules": [],
+  "files": [
+    "packages/agent/src/harness/agent-harness.ts"
+  ],
+  "requires_rebuild": true,
+  "failure_evidence": [
+    "task=terminal-bench-tune-mjcf; failure_repeat=1; action=action_08 discovered PGS solver Time pctg 0.51 (passing direction) then kept benchmarking solver variants instead of writing /app/model.xml; verifier=AgentTimeoutError after 900s with no model.xml persisted (reward 0.0); pass_repeat=2 (82547468cd57381d wrote model.xml and stopped)",
+    "task=terminal-bench-write-compressor; failure_repeat=1; action=continued rewriting/benchmarking past 878s; verifier=AgentTimeoutError timeout at 879s reward 0.0; pass_repeat=2 (5c80a94bb07f170a finished at 662s)",
+    "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=0; action=only 6 turns before the wall clock; verifier=AgentTimeoutError at 357s reward 0.0; pass_repeat=1 (e1604897cd1d55cd finished ~420s)",
+    "training_mean_reward=0.555556",
+    "failed_or_partial_trajectories=25",
+    "/app/pi-source-evidence/references/831d2546c374ccd5-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/5eccb257c17a1ed9-training-failures.json"
+  ],
+  "root_cause": "The agent has no awareness of the external hard wall-clock timeout enforced by the harness. On long tasks it keeps exploring, benchmarking, or refining and is killed before persisting its best-known (often already-passing) solution. Passing repeats of the same tasks differ only in that they wrote the answer and stopped in time; failing repeats had equivalent or better insight but ran out of wall clock.",
+  "mechanism": "Add a deadline-aware finalization mechanism to AgentHarness (packages/agent/src/harness/agent-harness.ts). resolveDeadlineEpochMs() reads an absolute (PI_AGENT_DEADLINE_MS) or relative (PI_AGENT_TIME_LIMIT_SECONDS) budget from the environment, and for a managed coding-agent run (PI_CODING_AGENT=true with a PI_PROVIDER set) falls back to a conservative default budget (840s, overridable, below the common 900s harness timeout) measured from process start. getSteeringMessages — the agent-loop's per-turn steering hook that runs on every default-path run — calls buildDueDeadlineMessages(), which once, when remaining time drops below the threshold (default 120s), injects a synthetic user message telling the agent to stop exploring and immediately persist and sanity-check its best solution. It is disabled by PI_AGENT_DISABLE_DEADLINE=1 or PI_AGENT_TIME_LIMIT_SECONDS=0 and is inert for the version smoke/ad-hoc SDK embeds.",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "new_direction",
+  "why_this_component": "getSteeringMessages is owned by the agent harness and is the sole default-path per-turn injection point polled by runLoop after every turn_end, so a deadline-triggered message reaches the model at the exact turn boundary where failing repeats kept exploring. Task guidance (Shared-6) cannot help because the agent lacks the runtime time-remaining signal; this is a runtime turn-control capability, which the module catalog explicitly lists as a permitted source addition (deadline-aware turn control / adaptive stopping) and which belongs to PI_SRC_HARNESS_RUNTIME rather than task prompt/rules.",
+  "predicted_fixes": [
+    "terminal-bench-tune-mjcf: near the deadline the agent is told to write /app/model.xml with its already-found passing solver setting instead of continuing to benchmark, converting timeout repeats into passes",
+    "terminal-bench-write-compressor and terminal-bench-adaptive-rejection-sampler: timeout repeats finalize and persist their best solution before the hard kill",
+    "Long tasks generally: reduces the 11 timeout failures and stabilizes the 5 pass-but-timeout rollouts by prompting timely persistence"
+  ],
+  "regression_risks": [
+    "If injected too early the message could nudge the agent to stop before finishing genuinely necessary work; mitigated by a conservative default budget (840s) and a late 120s warning threshold, both env-overridable",
+    "The default budget assumes a ~900s+ external timeout; for much shorter timeouts the notice could fire late, but it is a one-time additive hint and cannot make a run worse than an un-warned timeout",
+    "On tasks with no external timeout the default arms only for managed coding-agent runs and can be disabled via PI_AGENT_DISABLE_DEADLINE=1"
+  ],
+  "targeted_checks": [
+    "agent-harness",
+    "On terminal-bench-tune-mjcf repeat that previously timed out, confirm the deadline steering message is injected and /app/model.xml is written before the hard timeout (a pass flip would corroborate; no flip would falsify the causal claim)"
+  ],
+  "analysis_tags": [
+    "deadline-aware-turn-control",
+    "adaptive-finalization",
+    "timeout-driven-failures",
+    "steering-injection",
+    "harness-runtime"
+  ]
+}
