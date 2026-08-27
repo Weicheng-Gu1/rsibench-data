@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "change_id": "round-01-deadline-aware-loop",
+  "failure_evidence": [
+    "task=headless-terminal; failure_repeat=1; action=implemented working HeadlessTerminal but verifier scored 0.0; verifier=test_outputs.py failed; pass_repeat=2",
+    "task=largest-eigenval; failure_repeat=0,1; action=agent timed out at 900s before converging; verifier=AgentTimeoutError; pass_repeat=2",
+    "task=configure-git-webserver; failure_repeat=0; action=agent timed out at 892s with 81 turns; verifier=no error but score 0.0; pass_repeat=1,2",
+    "training_mean_reward=0.311111; failed_or_partial_trajectories=37; all_training_trajectories=45"
+  ],
+  "root_cause": "The agent loop has no mechanism to detect an approaching external deadline and stop gracefully. When the harbor evaluator kills the agent at 900s, all accumulated work is lost rather than preserved as a partial transcript that the verifier can still evaluate. This affects 37 of 45 training trajectories directly through AgentTimeoutError or indirectly through excessively long runs that produce no usable output before the timeout.",
+  "mechanism": "Add deadlineMs to AgentLoopConfig and a deadline check in the runLoop function before each turn. When the remaining budget is less than a 30s safety margin, the loop emits agent_end immediately with accumulated messages, returning partial progress to the verifier instead of losing all work to the external timeout.",
+  "evidence_basis": "within_task_contrast",
+  "prior_attempt_disposition": "new_direction",
+  "why_this_component": "The agent loop (agent-loop.ts) is the core turn-cycling mechanism that controls when the agent stops. It already has shouldStopAfterTurn but no built-in deadline check. Adding deadlineMs directly to the loop config makes the loop deadline-aware without requiring harness changes, though the harness can later pass the deadline for tighter integration.",
+  "predicted_fixes": [
+    "Agents approaching the harbor 900s timeout will stop gracefully 30s before the deadline, emitting agent_end with accumulated messages rather than losing all work",
+    "headless-terminal failing repetitions that produce correct implementations will have their partial progress preserved for the verifier",
+    "largest-eigenval failing repetitions will emit partial results before timing out, increasing the chance the verifier sees useful output",
+    "configure-git-webserver failing repetition with 81 turns will stop before the external timeout rather than being killed mid-exploration"
+  ],
+  "regression_risks": [
+    "If no deadlineMs is passed (the field is optional), the agent loop behaves identically to before - zero regression risk for existing callers",
+    "If a deadline is passed too aggressively (less than 30s remaining), the agent may stop before completing useful work, potentially lowering scores on tasks that would otherwise have succeeded"
+  ],
+  "targeted_checks": [
+    "agent-loop",
+    "cancel-error-smoke"
+  ],
+  "analysis_tags": [
+    "deadline-awareness",
+    "agent-loop",
+    "graceful-degradation",
+    "timeout-resilience"
+  ]
+}

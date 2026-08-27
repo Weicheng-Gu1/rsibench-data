@@ -1,0 +1,71 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 3a12506..25f8317 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -163,6 +163,7 @@ async function runLoop(
+ 	let currentContext = initialContext;
+ 	let config = initialConfig;
+ 	let firstTurn = true;
++	let turnCount = 0;
+ 	// Check for steering messages at start (user may have typed while waiting)
+ 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
+ 
+@@ -172,6 +173,15 @@ async function runLoop(
+ 
+ 		// Inner loop: process tool calls and steering messages
+ 		while (hasMoreToolCalls || pendingMessages.length > 0) {
++			// Check deadline and turn budget before starting another LLM call
++			if (
++				(config.maxTurns !== undefined && turnCount >= config.maxTurns) ||
++				(config.deadlineMs !== undefined && Date.now() >= config.deadlineMs)
++			) {
++				await emit({ type: "agent_end", messages: newMessages });
++				return;
++			}
++
+ 			if (!firstTurn) {
+ 				await emit({ type: "turn_start" });
+ 			} else {
+@@ -223,6 +233,8 @@ async function runLoop(
+ 
+ 			await emit({ type: "turn_end", message, toolResults });
+ 
++			turnCount++;
++
+ 			const nextTurnContext = {
+ 				message,
+ 				toolResults,
+diff --git a/packages/agent/src/types.ts b/packages/agent/src/types.ts
+index 52f3489..c88783a 100644
+--- a/packages/agent/src/types.ts
++++ b/packages/agent/src/types.ts
+@@ -251,6 +251,29 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
+ 	 */
+ 	getFollowUpMessages?: () => Promise<AgentMessage[]>;
+ 
++	/**
++	 * Maximum number of assistant turns to execute before the loop stops.
++	 *
++	 * The turn counter increments after each assistant response completes (including
++	 * tool-call execution). When `turnCount >= maxTurns`, the loop emits `agent_end`
++	 * with the accumulated messages and stops without starting another provider request.
++	 *
++	 * Optional: when unset or undefined, the loop has no turn-count limit.
++	 */
++	maxTurns?: number;
++
++	/**
++	 * Deadline after which the loop stops before starting another LLM call.
++	 *
++	 * The loop checks `Date.now() >= deadlineMs` before each new provider request.
++	 * If the deadline has passed, it emits `agent_end` with the accumulated messages
++	 * and stops without making another provider call. Tool calls already in-flight
++	 * are allowed to finish.
++	 *
++	 * Optional: when unset or undefined, the loop has no deadline.
++	 */
++	deadlineMs?: number;
++
+ 	/**
+ 	 * Tool execution mode.
+ 	 * - "sequential": execute tool calls one by one
