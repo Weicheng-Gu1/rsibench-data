@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "All 45 frozen TRAIN rollouts recorded agent_submissions=0 and ran to full wall-clock budget exhaustion (~7200s, termination_reason=expected_budget_exhaustion). Scores came only from SForge auto-snapshots (best_round almost always auto-1/auto-2), meaning the agent never deliberately finalized/submitted a best result and kept doing incremental work until force-terminated. Rounds 01 (stall guard) and 02 (bash default timeout) addressed looping and single blocking commands but neither gives the loop any notion of elapsed wall-clock budget. I added a deadline-aware finalize reminder in the agent loop (packages/agent/src/agent-loop.ts, with a runBudgetMs field in packages/agent/src/types.ts), analogous to the existing stall reminder: an elapsed-time tracker that, once, when ~85% of the run budget is spent, injects a single non-blocking user message telling the agent to secure and submit its single best working solution before force-termination. The default-path consumer is the model's next provider request. Clean rebuild + CLI smoke pass and the cumulative diff is present in the worktree.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "agent-loop-budget-finalize-reminder-03",
+    "failure_evidence": [
+      "task=edgebench-vibrating_path_graph_coloring; failure_repeat=0; action=agent kept editing/re-running until wall-clock exhaustion with agent_submissions=0 (message_count=90, runtime 7201s, termination_reason=expected_budget_exhaustion), so recorded reward came from auto-1 snapshot; verifier=SForge agent reached its configured task timeout (reward 0.5); pass_repeat=none (repeat_02 agent_completed reward 0.48, still agent_submissions=0)",
+      "task=edgebench-ann_vector_search_qps; failure_repeat=1; action=ran full 7200s budget, agent_submissions=0, best captured only at auto-2 (best_score 7758); verifier=SForge timeout, normalized_score 0.4733; pass_repeat=none (repeat_00 best at auto-1 best_score 4173 normalized 0.1525, intermediate-snapshot luck not deliberate finalize)",
+      "training_mean_reward=0.235332",
+      "failed_or_partial_trajectories=45",
+      "all_training_trajectories=45",
+      "/app/pi-source-evidence/references/71c4246ba7fd819a-training-opportunity-index.json",
+      "/app/pi-source-evidence/references/233a0779d5b09821-training-failures.json"
+    ],
+    "root_cause": "The low-level agent loop (runLoop in packages/agent/src/agent-loop.ts) has no awareness of elapsed wall-clock time. RSIBench task runs are bounded by a fixed external deadline (~2h) and force-terminated; only an already-saved/submitted result counts. Because the loop never signals that the budget is nearly spent, the agent keeps taking incremental actions until it is killed and never proactively finalizes, so across all 45 rollouts agent_submissions=0 and the recorded score is whatever an intermediate auto-snapshot happened to capture rather than a deliberately secured best result.",
+    "mechanism": "createBudgetTracker(config.runBudgetMs) records the loop start time. After each tool-driven turn it checks elapsed time; when >=85% of the budget has elapsed it returns, exactly once, a single non-blocking user reminder injected into pendingMessages alongside steering/stall messages so the model reads it before its next response. The reminder tells the agent to stop expanding scope, write its single best working solution to disk, explicitly submit it through the task mechanism, and give its final answer rather than chase marginal gains it may not finish. runBudgetMs was added to AgentLoopConfig (packages/agent/src/types.ts) with default DEFAULT_RUN_BUDGET_MS (2h) so the mechanism is active on the default RSIBench task-agent path; 0 disables it to preserve historical unbounded behavior. The default-path consumer of the injected message is the model's next provider request.",
+    "evidence_basis": "cross_task_pattern",
+    "prior_attempt_disposition": "new_direction",
+    "why_this_component": "Deciding when to stop/finalize versus continue is turn-progression/stopping, which is PI_SRC_AGENT_LOOP's responsibility. It is not missing task strategy (the agents already solve the tasks; they fail to finalize before the deadline), so a shared-resource nudge would not give the runtime any elapsed-time signal. The loop is the single point that observes every turn on the default path; the config field lives in the same agent_core_source layer (packages/agent/src/types.ts) and is required for the default-path consumer. This is a distinct failure mode from round-01 (repeated-identical-call stall) and round-02 (single blocking bash call), neither of which fires on steady productive-but-endless work approaching the deadline.",
+    "predicted_fixes": [
+      "Timeout-dominated runs (all 15 tasks) receive one finalize nudge near the deadline, increasing the chance the agent explicitly saves/submits its best on-disk artifact instead of relying on a lucky intermediate auto-snapshot, raising mean reward.",
+      "Mixed-outcome tasks (vibrating_path_graph_coloring 0.5/0.02/0.48, ann_vector_search_qps 0.15/0.47/0.10) get more consistent scores because the best result is deliberately secured rather than captured at random by whichever auto-snapshot fired.",
+      "Fewer runs waste the final budget window on open-ended new experiments or refactors that are discarded at force-termination."
+    ],
+    "regression_risks": [
+      "A task legitimately needing the full budget receives one advisory, non-blocking message; the agent may keep working, so correctness is preserved.",
+      "If a run finishes well under budget the reminder never fires (fraction 0.85), so short tasks are unaffected.",
+      "Default 2h budget is an assumption; if a real deadline differs the reminder timing is approximate but still directionally correct, and runBudgetMs=0 fully disables it.",
+      "Adds at most one user message per run near the deadline: negligible context cost."
+    ],
+    "targeted_checks": [
+      "agent-loop",
+      "cancel-error-smoke",
+      "Re-run pass@3 on edgebench-vibrating_path_graph_coloring and edgebench-ann_vector_search_qps and confirm more runs end with an explicit agent submission and higher, less variance-driven mean reward; a build+CLI smoke alone would not falsify the causal claim."
+    ],
+    "analysis_tags": [
+      "deadline-aware-turn-control",
+      "budget-awareness",
+      "adaptive-stopping",
+      "finalize-before-timeout",
+      "cross-task-timeout"
+    ]
+  }
+}

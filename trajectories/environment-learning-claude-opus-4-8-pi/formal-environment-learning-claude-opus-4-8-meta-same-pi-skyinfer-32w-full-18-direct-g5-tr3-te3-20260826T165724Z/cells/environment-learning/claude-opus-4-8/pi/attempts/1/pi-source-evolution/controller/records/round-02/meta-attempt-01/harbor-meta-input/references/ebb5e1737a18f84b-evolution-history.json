@@ -1,0 +1,157 @@
+{
+  "schema_version": 2,
+  "purpose": "Falsifiable cross-round memory without controller-defined semantic mechanism classes. The Meta-agent owns causal interpretation.",
+  "attempts": [
+    {
+      "candidate_id": "round-01",
+      "status": "accepted",
+      "reason": "direct_full_training_improved",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "agent-loop-stagnation-guard-01",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/agent-loop.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=edgebench-juliet_vulnerability_analyzer; failure_repeat=2; action=action_NN repeated identical 'for i in $(seq 1 15); ... sleep 60' TCP poll of judge host <REDACTED_PRIVATE_IPV4>:18902, printing 'attempt N: down' each iteration; verifier=SForge agent reached its configured task timeout (reward 0.6256, best result never confirmed-submitted, agent_submissions=0); pass_repeat=none",
+          "task=edgebench-molecular_self_assembly; failure_repeat=0; action=action_NN after sforge-submit returned curl exit 28 the agent concluded the auto-evaluator would capture its on-disk solution and entered repeated re-validation/submit-retry loops instead of stopping; verifier=reward 0.0 despite a working ~3.4M-scoring solution on disk; pass_repeat=none",
+          "/app/pi-source-evidence/references/9dcb1f2a36129257-training-failures.json",
+          "/app/pi-source-evidence/references/4a56294ac4065a60-index.json",
+          "training_mean_reward=0.218999",
+          "failed_or_partial_trajectories=45"
+        ],
+        "root_cause": "The low-level agent loop (runLoop in packages/agent/src/agent-loop.ts) advances turn-to-turn purely on tool-call presence and optional host hooks; it has no notion of progress. When a task-provided resource (the judge server) becomes unreachable or a validation returns unchanged, the model repeats the same tool call indefinitely and the loop keeps feeding those turns to the provider until the external timeout kills the run, wasting the whole budget and often leaving no final/submitted result.",
+        "mechanism": "createStallTracker() records a per-turn signature = sorted (tool name + normalized arguments) combined with a digest of the tool-result text. When the same signature repeats STALL_REPEAT_THRESHOLD (4) consecutive turns, observe() returns a single reminder UserMessage (once per streak; reset when the signature changes or a no-tool turn occurs). runLoop injects it into pendingMessages alongside steering messages, so the model reads it before its next response. The reminder tells the agent that repeating an unchanged action changes nothing, to treat an unreachable/unchanging resource as unavailable, and to finalize its best result rather than keep re-verifying.",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The defect is turn progression / stopping when no progress is being made, which is exactly PI_SRC_AGENT_LOOP's responsibility (agent-loop.md: 'continues running after it has reached a terminal state'). It is not missing task guidance (the agent already knows how to solve tasks; it fails to stop looping), so a shared-resource edit would not change the runtime looping behavior. The loop is the single point that observes every tool call and result on the default RSIBench task-agent path, and the injected reminder's default-path consumer is the model's next provider request.",
+        "predicted_fixes": [
+          "Judge-polling / submit-retry loops (juliet, molecular, vibrating_path, integer_codec) get nudged to stop after 4 identical repeats, freeing budget and letting the agent finalize instead of timing out.",
+          "Repeated re-validation of an already-good solution is interrupted, reducing solution drift and preserving the best on-disk artifact.",
+          "Fewer runs end in 'agent reached its configured task timeout', raising mean reward on timeout-dominated tasks."
+        ],
+        "regression_risks": [
+          "A legitimately long identical-looking loop (e.g. deterministic batch re-runs that genuinely need repetition) receives one advisory reminder; it is non-blocking and the agent may continue, so correctness is preserved.",
+          "Result digest uses full text, so very large but slightly varying outputs differ in signature and correctly avoid triggering; false positives are limited to truly identical repeats.",
+          "Adds one user message every 4th identical turn, a negligible context increase that only occurs during stalls."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke",
+          "Re-run pass@3 on edgebench-juliet_vulnerability_analyzer and edgebench-molecular_self_assembly and confirm fewer timeout terminations / higher mean reward; a build+smoke alone would not falsify the causal claim."
+        ],
+        "analysis_tags": [
+          "stagnation-detection",
+          "turn-control",
+          "budget-preservation",
+          "cross-task-timeout"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.2189986810144663,
+        "candidate_score": 0.23104975364094857,
+        "delta": 0.012051072626482279,
+        "partial_candidate_score": 0.23104975364094857,
+        "partial_delta": 0.012051072626482279,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "edgebench-openttd_transport_ai"
+        ],
+        "improved_tasks": [
+          "edgebench-ad_placement_optimization",
+          "edgebench-dcss_dungeon_ai",
+          "edgebench-flt_regular_formalization",
+          "edgebench-integer_compression_codec",
+          "edgebench-molecular_self_assembly",
+          "edgebench-sphere_eversion_formalization",
+          "edgebench-vehicle_routing_time_windows",
+          "edgebench-vibrating_path_graph_coloring"
+        ],
+        "regressed_tasks": [
+          "edgebench-ann_vector_search_qps",
+          "edgebench-juliet_vulnerability_analyzer",
+          "edgebench-openttd_transport_ai",
+          "edgebench-tree_block_partitioning",
+          "edgebench-wesnoth_tactical_ai"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/records/round-01"
+    },
+    {
+      "candidate_id": "meta-agent-smoke",
+      "status": "rejected",
+      "reason": "qualification_passed",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "meta-agent-smoke-qualification",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/stream-fn.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "controller qualification: prove edit, protocol, build, and smoke"
+        ],
+        "root_cause": "Qualification-only smoke: no training-trajectory root cause is claimed. The task is to prove the recursive edit and validation path end to end.",
+        "mechanism": "Inserted exactly one harmless source comment as the first line of packages/agent/src/stream-fn.ts, producing a real cumulative Git diff with zero runtime behavior change.",
+        "evidence_basis": "runtime_failure",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The qualification task explicitly names packages/agent/src/stream-fn.ts (PI_SRC_AGENT_LOOP) as the required edit surface to prove the complete recursive edit-build-smoke path.",
+        "predicted_fixes": [
+          "Candidate produces a real Git diff against accepted_commit that the controller can build and smoke."
+        ],
+        "regression_risks": [
+          "None: the edit is a comment-only line inserted before existing imports and does not alter runtime behavior."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke"
+        ],
+        "analysis_tags": [
+          "smoke-qualification",
+          "discard-after-validation"
+        ]
+      },
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "partial_candidate_score": null,
+        "partial_delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": [],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/records/meta-agent-smoke"
+    }
+  ],
+  "active_attempts_since_last_accept": [
+    "meta-agent-smoke"
+  ],
+  "prompt_policy": {
+    "performance_attempts": 0,
+    "performance_rejections": 0,
+    "blocked_after_no_lift": false,
+    "rejected_change_ids": [],
+    "required_action": "prompt_remains_eligible_with_causal_evidence"
+  }
+}

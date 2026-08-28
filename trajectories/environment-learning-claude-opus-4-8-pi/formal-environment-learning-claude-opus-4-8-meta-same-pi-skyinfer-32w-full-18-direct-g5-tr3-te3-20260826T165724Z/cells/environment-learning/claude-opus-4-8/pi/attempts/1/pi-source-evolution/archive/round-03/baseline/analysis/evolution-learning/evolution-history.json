@@ -1,0 +1,313 @@
+{
+  "schema_version": 2,
+  "purpose": "Falsifiable cross-round memory without controller-defined semantic mechanism classes. The Meta-agent owns causal interpretation.",
+  "attempts": [
+    {
+      "candidate_id": "round-01",
+      "status": "accepted",
+      "reason": "direct_full_training_improved",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "agent-loop-stagnation-guard-01",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/agent-loop.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=edgebench-juliet_vulnerability_analyzer; failure_repeat=2; action=action_NN repeated identical 'for i in $(seq 1 15); ... sleep 60' TCP poll of judge host <REDACTED_PRIVATE_IPV4>:18902, printing 'attempt N: down' each iteration; verifier=SForge agent reached its configured task timeout (reward 0.6256, best result never confirmed-submitted, agent_submissions=0); pass_repeat=none",
+          "task=edgebench-molecular_self_assembly; failure_repeat=0; action=action_NN after sforge-submit returned curl exit 28 the agent concluded the auto-evaluator would capture its on-disk solution and entered repeated re-validation/submit-retry loops instead of stopping; verifier=reward 0.0 despite a working ~3.4M-scoring solution on disk; pass_repeat=none",
+          "/app/pi-source-evidence/references/9dcb1f2a36129257-training-failures.json",
+          "/app/pi-source-evidence/references/4a56294ac4065a60-index.json",
+          "training_mean_reward=0.218999",
+          "failed_or_partial_trajectories=45"
+        ],
+        "root_cause": "The low-level agent loop (runLoop in packages/agent/src/agent-loop.ts) advances turn-to-turn purely on tool-call presence and optional host hooks; it has no notion of progress. When a task-provided resource (the judge server) becomes unreachable or a validation returns unchanged, the model repeats the same tool call indefinitely and the loop keeps feeding those turns to the provider until the external timeout kills the run, wasting the whole budget and often leaving no final/submitted result.",
+        "mechanism": "createStallTracker() records a per-turn signature = sorted (tool name + normalized arguments) combined with a digest of the tool-result text. When the same signature repeats STALL_REPEAT_THRESHOLD (4) consecutive turns, observe() returns a single reminder UserMessage (once per streak; reset when the signature changes or a no-tool turn occurs). runLoop injects it into pendingMessages alongside steering messages, so the model reads it before its next response. The reminder tells the agent that repeating an unchanged action changes nothing, to treat an unreachable/unchanging resource as unavailable, and to finalize its best result rather than keep re-verifying.",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The defect is turn progression / stopping when no progress is being made, which is exactly PI_SRC_AGENT_LOOP's responsibility (agent-loop.md: 'continues running after it has reached a terminal state'). It is not missing task guidance (the agent already knows how to solve tasks; it fails to stop looping), so a shared-resource edit would not change the runtime looping behavior. The loop is the single point that observes every tool call and result on the default RSIBench task-agent path, and the injected reminder's default-path consumer is the model's next provider request.",
+        "predicted_fixes": [
+          "Judge-polling / submit-retry loops (juliet, molecular, vibrating_path, integer_codec) get nudged to stop after 4 identical repeats, freeing budget and letting the agent finalize instead of timing out.",
+          "Repeated re-validation of an already-good solution is interrupted, reducing solution drift and preserving the best on-disk artifact.",
+          "Fewer runs end in 'agent reached its configured task timeout', raising mean reward on timeout-dominated tasks."
+        ],
+        "regression_risks": [
+          "A legitimately long identical-looking loop (e.g. deterministic batch re-runs that genuinely need repetition) receives one advisory reminder; it is non-blocking and the agent may continue, so correctness is preserved.",
+          "Result digest uses full text, so very large but slightly varying outputs differ in signature and correctly avoid triggering; false positives are limited to truly identical repeats.",
+          "Adds one user message every 4th identical turn, a negligible context increase that only occurs during stalls."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke",
+          "Re-run pass@3 on edgebench-juliet_vulnerability_analyzer and edgebench-molecular_self_assembly and confirm fewer timeout terminations / higher mean reward; a build+smoke alone would not falsify the causal claim."
+        ],
+        "analysis_tags": [
+          "stagnation-detection",
+          "turn-control",
+          "budget-preservation",
+          "cross-task-timeout"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.2189986810144663,
+        "candidate_score": 0.23104975364094857,
+        "delta": 0.012051072626482279,
+        "partial_candidate_score": 0.23104975364094857,
+        "partial_delta": 0.012051072626482279,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "edgebench-openttd_transport_ai"
+        ],
+        "improved_tasks": [
+          "edgebench-ad_placement_optimization",
+          "edgebench-dcss_dungeon_ai",
+          "edgebench-flt_regular_formalization",
+          "edgebench-integer_compression_codec",
+          "edgebench-molecular_self_assembly",
+          "edgebench-sphere_eversion_formalization",
+          "edgebench-vehicle_routing_time_windows",
+          "edgebench-vibrating_path_graph_coloring"
+        ],
+        "regressed_tasks": [
+          "edgebench-ann_vector_search_qps",
+          "edgebench-juliet_vulnerability_analyzer",
+          "edgebench-openttd_transport_ai",
+          "edgebench-tree_block_partitioning",
+          "edgebench-wesnoth_tactical_ai"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/records/round-01"
+    },
+    {
+      "candidate_id": "round-02",
+      "status": "accepted",
+      "reason": "direct_full_training_improved",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "bash-default-timeout-01",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_TOOL_RUNTIME",
+        "compound_modules": [],
+        "files": [
+          "packages/coding-agent/src/core/tools/bash.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=edgebench-vibrating_path_graph_coloring; failure_repeat=0; action=action_NN a bash command hung inside a single tool call (only message_count=23, total_tokens=360953 across 7200s of wall time); verifier=SForge agent reached its configured task timeout (reward 0.0, timed_out=true, agent_submissions=0); pass_repeat=1 (message_count=92, total_tokens=4508989, termination_reason=agent_completed, reward 0.52)",
+          "/app/pi-source-evidence/references/388e304e9c1802f3-pi-mechanism-evidence.json",
+          "/app/pi-source-evidence/references/9c2858efe3f074a8-pi-mechanism-evidence.json",
+          "/app/pi-source-evidence/references/e2a81c642c498b47-training-opportunity-index.json",
+          "training_mean_reward=0.231050",
+          "failed_or_partial_trajectories=45"
+        ],
+        "root_cause": "The bash tool (packages/coding-agent/src/core/tools/bash.ts) applies a wall-clock timeout to a command only when the model passes an explicit 'timeout'; the schema and description advertise 'no default timeout'. When a command blocks (unreachable network poll, foreground server, infinite-loop test, stuck build/proof), that single tool call stays open until the external task timeout kills the run, consuming the entire budget in a handful of turns and leaving no finalized/submitted result. This is a distinct failure mode from round-01's repeated-identical-call stagnation guard, which never triggers on one long-blocking call.",
+        "mechanism": "createBashToolDefinition now resolves an effectiveTimeout: when the model omits 'timeout', it applies DEFAULT_COMMAND_TIMEOUT_SECONDS (600s), configurable via the new BashToolOptions.defaultTimeout (0 disables to preserve historical unbounded behavior). An explicit model-supplied timeout always takes precedence. On a default-limit timeout the existing timeout path returns the accumulated output plus an augmented observation telling the model the command was still running and to re-run with a larger explicit timeout or treat the resource as unavailable. The default RSIBench task-agent path builds bash via createCodingToolDefinitions(cwd) with no bash options, so the 600s ceiling is the actual default-path consumer; the model's next turn observes the timeout instead of the run silently expiring.",
+        "evidence_basis": "within_task_contrast",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The defect is incorrect tool execution timeout behavior (a blocking command never yields control), which is PI_SRC_TOOL_RUNTIME's responsibility per module guidance ('tool ... timeout ... is wrong'). It is not missing task guidance (a shared-resource nudge cannot forcibly bound a blocked child process) and not agent-loop turn control (the loop never sees the turn end because the tool call itself never returns). The bash tool is the single point that spawns and awaits every command on the default path.",
+        "predicted_fixes": [
+          "Runs that previously hung inside one blocking command (vibrating_path_graph_coloring, graph_node_classification, openttd_transport_ai, exchange_core_throughput, dcss_dungeon_ai, ann_vector_search_qps and other timeout-dominated tasks) now recover control every <=600s, freeing budget for the model to finalize a scoring artifact instead of expiring at reward 0.0.",
+          "Fewer runs end in 'agent reached its configured task timeout', raising mean reward on timeout-dominated tasks where a scoring solution is otherwise reachable.",
+          "The timed-out observation lets the model retry with an explicit larger timeout for genuinely long commands or abandon an unreachable/blocking resource."
+        ],
+        "regression_risks": [
+          "A legitimately long single command (large build, slow Lean/formalization proof) that exceeds 600s is interrupted; mitigated because the model can re-run with an explicit larger 'timeout', the tool description now states this, and partial accumulated output is still returned.",
+          "If a task depends on a foreground long-poll under 600s the behavior is unchanged; only calls exceeding the ceiling are affected.",
+          "Adds one timeout interruption per over-limit call; negligible context cost and strictly less than losing the whole budget."
+        ],
+        "targeted_checks": [
+          "tools",
+          "Re-run pass@3 on edgebench-vibrating_path_graph_coloring and edgebench-graph_node_classification and confirm fewer timeout terminations / higher mean reward; a build+CLI smoke alone would not falsify the causal claim."
+        ],
+        "analysis_tags": [
+          "tool-timeout",
+          "budget-preservation",
+          "blocking-command",
+          "cross-task-timeout"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.23104975364094857,
+        "candidate_score": 0.23533179564618031,
+        "delta": 0.004282042005231745,
+        "partial_candidate_score": 0.23533179564618031,
+        "partial_delta": 0.004282042005231745,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [
+          "edgebench-ad_placement_optimization",
+          "edgebench-dcss_dungeon_ai",
+          "edgebench-flt_regular_formalization",
+          "edgebench-juliet_vulnerability_analyzer",
+          "edgebench-molecular_self_assembly",
+          "edgebench-tree_block_partitioning",
+          "edgebench-vehicle_routing_time_windows",
+          "edgebench-vibrating_path_graph_coloring",
+          "edgebench-wesnoth_tactical_ai"
+        ],
+        "regressed_tasks": [
+          "edgebench-ann_vector_search_qps",
+          "edgebench-integer_compression_codec",
+          "edgebench-sphere_eversion_formalization"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/records/round-02"
+    },
+    {
+      "candidate_id": "round-03",
+      "status": "editing",
+      "reason": "",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "agent-loop-budget-finalize-reminder-03",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [
+          "PI_SRC_HARNESS_RUNTIME"
+        ],
+        "files": [
+          "packages/agent/src/agent-loop.ts",
+          "packages/agent/src/types.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=edgebench-vibrating_path_graph_coloring; failure_repeat=0; action=agent kept editing/re-running until wall-clock exhaustion with agent_submissions=0 (message_count=90, runtime 7201s, termination_reason=expected_budget_exhaustion), so recorded reward came from auto-1 snapshot; verifier=SForge agent reached its configured task timeout (reward 0.5); pass_repeat=none (repeat_02 agent_completed reward 0.48, still agent_submissions=0)",
+          "task=edgebench-ann_vector_search_qps; failure_repeat=1; action=ran full 7200s budget, agent_submissions=0, best captured only at auto-2 (best_score 7758); verifier=SForge timeout, normalized_score 0.4733; pass_repeat=none (repeat_00 best at auto-1 best_score 4173 normalized 0.1525, intermediate-snapshot luck not deliberate finalize)",
+          "training_mean_reward=0.235332",
+          "failed_or_partial_trajectories=45",
+          "all_training_trajectories=45",
+          "/app/pi-source-evidence/references/71c4246ba7fd819a-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/233a0779d5b09821-training-failures.json"
+        ],
+        "root_cause": "The low-level agent loop (runLoop in packages/agent/src/agent-loop.ts) has no awareness of elapsed wall-clock time. RSIBench task runs are bounded by a fixed external deadline (~2h) and force-terminated; only an already-saved/submitted result counts. Because the loop never signals that the budget is nearly spent, the agent keeps taking incremental actions until it is killed and never proactively finalizes, so across all 45 rollouts agent_submissions=0 and the recorded score is whatever an intermediate auto-snapshot happened to capture rather than a deliberately secured best result.",
+        "mechanism": "createBudgetTracker(config.runBudgetMs) records the loop start time. After each tool-driven turn it checks elapsed time; when >=85% of the budget has elapsed it returns, exactly once, a single non-blocking user reminder injected into pendingMessages alongside steering/stall messages so the model reads it before its next response. The reminder tells the agent to stop expanding scope, write its single best working solution to disk, explicitly submit it through the task mechanism, and give its final answer rather than chase marginal gains it may not finish. runBudgetMs was added to AgentLoopConfig (packages/agent/src/types.ts) with default DEFAULT_RUN_BUDGET_MS (2h) so the mechanism is active on the default RSIBench task-agent path; 0 disables it to preserve historical unbounded behavior. The default-path consumer of the injected message is the model's next provider request.",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "Deciding when to stop/finalize versus continue is turn-progression/stopping, which is PI_SRC_AGENT_LOOP's responsibility. It is not missing task strategy (the agents already solve the tasks; they fail to finalize before the deadline), so a shared-resource nudge would not give the runtime any elapsed-time signal. The loop is the single point that observes every turn on the default path; the config field lives in the same agent_core_source layer (packages/agent/src/types.ts) and is required for the default-path consumer. This is a distinct failure mode from round-01 (repeated-identical-call stall) and round-02 (single blocking bash call), neither of which fires on steady productive-but-endless work approaching the deadline.",
+        "predicted_fixes": [
+          "Timeout-dominated runs (all 15 tasks) receive one finalize nudge near the deadline, increasing the chance the agent explicitly saves/submits its best on-disk artifact instead of relying on a lucky intermediate auto-snapshot, raising mean reward.",
+          "Mixed-outcome tasks (vibrating_path_graph_coloring 0.5/0.02/0.48, ann_vector_search_qps 0.15/0.47/0.10) get more consistent scores because the best result is deliberately secured rather than captured at random by whichever auto-snapshot fired.",
+          "Fewer runs waste the final budget window on open-ended new experiments or refactors that are discarded at force-termination."
+        ],
+        "regression_risks": [
+          "A task legitimately needing the full budget receives one advisory, non-blocking message; the agent may keep working, so correctness is preserved.",
+          "If a run finishes well under budget the reminder never fires (fraction 0.85), so short tasks are unaffected.",
+          "Default 2h budget is an assumption; if a real deadline differs the reminder timing is approximate but still directionally correct, and runBudgetMs=0 fully disables it.",
+          "Adds at most one user message per run near the deadline: negligible context cost."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke",
+          "Re-run pass@3 on edgebench-vibrating_path_graph_coloring and edgebench-ann_vector_search_qps and confirm more runs end with an explicit agent submission and higher, less variance-driven mean reward; a build+CLI smoke alone would not falsify the causal claim."
+        ],
+        "analysis_tags": [
+          "deadline-aware-turn-control",
+          "budget-awareness",
+          "adaptive-stopping",
+          "finalize-before-timeout",
+          "cross-task-timeout"
+        ]
+      },
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "partial_candidate_score": null,
+        "partial_delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": [],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/records/round-03"
+    },
+    {
+      "candidate_id": "meta-agent-smoke",
+      "status": "rejected",
+      "reason": "qualification_passed",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "meta-agent-smoke-qualification",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/stream-fn.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "controller qualification: prove edit, protocol, build, and smoke"
+        ],
+        "root_cause": "Qualification-only smoke: no training-trajectory root cause is claimed. The task is to prove the recursive edit and validation path end to end.",
+        "mechanism": "Inserted exactly one harmless source comment as the first line of packages/agent/src/stream-fn.ts, producing a real cumulative Git diff with zero runtime behavior change.",
+        "evidence_basis": "runtime_failure",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The qualification task explicitly names packages/agent/src/stream-fn.ts (PI_SRC_AGENT_LOOP) as the required edit surface to prove the complete recursive edit-build-smoke path.",
+        "predicted_fixes": [
+          "Candidate produces a real Git diff against accepted_commit that the controller can build and smoke."
+        ],
+        "regression_risks": [
+          "None: the edit is a comment-only line inserted before existing imports and does not alter runtime behavior."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke"
+        ],
+        "analysis_tags": [
+          "smoke-qualification",
+          "discard-after-validation"
+        ]
+      },
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "partial_candidate_score": null,
+        "partial_delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": [],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/records/meta-agent-smoke"
+    }
+  ],
+  "active_attempts_since_last_accept": [
+    "round-03",
+    "meta-agent-smoke"
+  ],
+  "prompt_policy": {
+    "performance_attempts": 0,
+    "performance_rejections": 0,
+    "blocked_after_no_lift": false,
+    "rejected_change_ids": [],
+    "required_action": "prompt_remains_eligible_with_causal_evidence"
+  }
+}

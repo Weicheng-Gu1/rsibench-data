@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "generation": 1,
+  "candidate_id": "round-01",
+  "parent_accepted_commit": "00d789cc6fae873546cc1b97eb60b4814e67eac8",
+  "source_commit": "6470c29f17bf3b05042c262a31d3bac481a56584",
+  "change_id": "agent-loop-stagnation-guard-01",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "agent-loop-stagnation-guard-01",
+    "layer": "agent_core_source",
+    "primary_module": "PI_SRC_AGENT_LOOP",
+    "compound_modules": [],
+    "files": [
+      "packages/agent/src/agent-loop.ts"
+    ],
+    "requires_rebuild": true,
+    "failure_evidence": [
+      "task=edgebench-juliet_vulnerability_analyzer; failure_repeat=2; action=action_NN repeated identical 'for i in $(seq 1 15); ... sleep 60' TCP poll of judge host <REDACTED_PRIVATE_IPV4>:18902, printing 'attempt N: down' each iteration; verifier=SForge agent reached its configured task timeout (reward 0.6256, best result never confirmed-submitted, agent_submissions=0); pass_repeat=none",
+      "task=edgebench-molecular_self_assembly; failure_repeat=0; action=action_NN after sforge-submit returned curl exit 28 the agent concluded the auto-evaluator would capture its on-disk solution and entered repeated re-validation/submit-retry loops instead of stopping; verifier=reward 0.0 despite a working ~3.4M-scoring solution on disk; pass_repeat=none",
+      "/app/pi-source-evidence/references/9dcb1f2a36129257-training-failures.json",
+      "/app/pi-source-evidence/references/4a56294ac4065a60-index.json",
+      "training_mean_reward=0.218999",
+      "failed_or_partial_trajectories=45"
+    ],
+    "root_cause": "The low-level agent loop (runLoop in packages/agent/src/agent-loop.ts) advances turn-to-turn purely on tool-call presence and optional host hooks; it has no notion of progress. When a task-provided resource (the judge server) becomes unreachable or a validation returns unchanged, the model repeats the same tool call indefinitely and the loop keeps feeding those turns to the provider until the external timeout kills the run, wasting the whole budget and often leaving no final/submitted result.",
+    "mechanism": "createStallTracker() records a per-turn signature = sorted (tool name + normalized arguments) combined with a digest of the tool-result text. When the same signature repeats STALL_REPEAT_THRESHOLD (4) consecutive turns, observe() returns a single reminder UserMessage (once per streak; reset when the signature changes or a no-tool turn occurs). runLoop injects it into pendingMessages alongside steering messages, so the model reads it before its next response. The reminder tells the agent that repeating an unchanged action changes nothing, to treat an unreachable/unchanging resource as unavailable, and to finalize its best result rather than keep re-verifying.",
+    "evidence_basis": "cross_task_pattern",
+    "prior_attempt_disposition": "new_direction",
+    "why_this_component": "The defect is turn progression / stopping when no progress is being made, which is exactly PI_SRC_AGENT_LOOP's responsibility (agent-loop.md: 'continues running after it has reached a terminal state'). It is not missing task guidance (the agent already knows how to solve tasks; it fails to stop looping), so a shared-resource edit would not change the runtime looping behavior. The loop is the single point that observes every tool call and result on the default RSIBench task-agent path, and the injected reminder's default-path consumer is the model's next provider request.",
+    "predicted_fixes": [
+      "Judge-polling / submit-retry loops (juliet, molecular, vibrating_path, integer_codec) get nudged to stop after 4 identical repeats, freeing budget and letting the agent finalize instead of timing out.",
+      "Repeated re-validation of an already-good solution is interrupted, reducing solution drift and preserving the best on-disk artifact.",
+      "Fewer runs end in 'agent reached its configured task timeout', raising mean reward on timeout-dominated tasks."
+    ],
+    "regression_risks": [
+      "A legitimately long identical-looking loop (e.g. deterministic batch re-runs that genuinely need repetition) receives one advisory reminder; it is non-blocking and the agent may continue, so correctness is preserved.",
+      "Result digest uses full text, so very large but slightly varying outputs differ in signature and correctly avoid triggering; false positives are limited to truly identical repeats.",
+      "Adds one user message every 4th identical turn, a negligible context increase that only occurs during stalls."
+    ],
+    "targeted_checks": [
+      "agent-loop",
+      "cancel-error-smoke",
+      "Re-run pass@3 on edgebench-juliet_vulnerability_analyzer and edgebench-molecular_self_assembly and confirm fewer timeout terminations / higher mean reward; a build+smoke alone would not falsify the causal claim."
+    ],
+    "analysis_tags": [
+      "stagnation-detection",
+      "turn-control",
+      "budget-preservation",
+      "cross-task-timeout"
+    ]
+  },
+  "changed_files": [
+    "packages/agent/src/agent-loop.ts"
+  ],
+  "patch_path": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/records/generations/gen-001.patch",
+  "patch_sha256": "b0d371bf40cfb3ed548afa8873682229e2498605e0aa49e3099956dde352264f",
+  "artifact_sha256": "d2894a5b5bcb6a2fcfd8481957d98fc97f1536d91608f7b35e7dff421a34f21c",
+  "local_generation_root": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/generations/gen-001",
+  "local_source_root": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/generations/gen-001/source",
+  "local_build_root": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/worktrees/build/round-01/attempt-01",
+  "local_runtime_package_root": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/worktrees/build/round-01/attempt-01/packages/coding-agent",
+  "validation_ref": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/controller/records/round-01/validation-attempt-01/validation.json",
+  "performance_gate_ref": "/volume/ywan/yss/rsibench/runs/formal-environment-learning-claude-opus-4-8-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260826T165724Z/cells/environment-learning/claude-opus-4-8/pi/attempts/1/pi-source-evolution/archive/round-01/candidates/round-01/attempt-01/target-validation/result.json"
+}

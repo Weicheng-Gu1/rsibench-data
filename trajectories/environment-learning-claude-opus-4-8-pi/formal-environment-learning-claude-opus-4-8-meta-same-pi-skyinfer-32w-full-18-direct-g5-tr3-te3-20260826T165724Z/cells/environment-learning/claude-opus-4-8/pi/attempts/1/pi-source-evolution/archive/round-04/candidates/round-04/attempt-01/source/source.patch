@@ -1,0 +1,193 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 0603d8f..26da423 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -175,6 +175,17 @@ async function runLoop(
+ 	// looping until the run is force-terminated.
+ 	const stall = createStallTracker();
+ 
++	// Deadline-awareness guard: RSIBench task runs are bounded by a fixed
++	// external wall-clock deadline and force-terminated; only a result the agent
++	// has already saved/submitted counts. The loop otherwise has no notion of
++	// elapsed time, so an agent doing steady productive-but-open-ended work keeps
++	// taking incremental actions until it is killed and never proactively secures
++	// its best result (evidence: agent_submissions=0 across every observed
++	// rollout, with the recorded score coming from a lucky intermediate snapshot).
++	// When a run budget is configured, inject exactly one finalize reminder near
++	// the deadline so the model deliberately saves/submits its best result.
++	const budget = createBudgetTracker(config.runBudgetMs);
++
+ 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
+ 	while (true) {
+ 		let hasMoreToolCalls = true;
+@@ -274,6 +285,10 @@ async function runLoop(
+ 			if (stallReminder) {
+ 				pendingMessages.push(stallReminder);
+ 			}
++			const budgetReminder = budget.observe();
++			if (budgetReminder) {
++				pendingMessages.push(budgetReminder);
++			}
+ 		}
+ 
+ 		// Agent would stop here. Check for follow-up messages.
+@@ -904,3 +919,59 @@ function createStallReminderMessage(repeatCount: number): AgentMessage {
+ 		timestamp: Date.now(),
+ 	};
+ }
++
++/**
++ * Fraction of the configured run budget that must elapse before the loop
++ * injects its one-time finalize reminder. Chosen high enough that short tasks
++ * never see it, but with enough headroom left for the model to write and submit
++ * its best result before the external deadline force-terminates the run.
++ */
++const BUDGET_FINALIZE_FRACTION = 0.85;
++
++/**
++ * Tracks elapsed wall-clock time against a configured run budget so the loop
++ * can prompt the agent to finalize (deliberately save/submit its best working
++ * result) before the external deadline force-terminates the run. The recorded
++ * score of a killed run is only whatever the agent has already secured, so an
++ * agent that keeps taking incremental actions until termination scores from a
++ * lucky intermediate snapshot rather than a deliberately finished best result.
++ *
++ * Emits at most one advisory reminder per run, the first time elapsed time
++ * crosses BUDGET_FINALIZE_FRACTION of the budget. Disabled (never fires) when
++ * no positive budget is configured, preserving historical unbounded behavior.
++ */
++function createBudgetTracker(runBudgetMs: number | undefined) {
++	const enabled = typeof runBudgetMs === "number" && runBudgetMs > 0;
++	const startTime = Date.now();
++	const thresholdMs = enabled ? runBudgetMs * BUDGET_FINALIZE_FRACTION : 0;
++	let reminded = false;
++
++	return {
++		observe(): AgentMessage | undefined {
++			if (!enabled || reminded) {
++				return undefined;
++			}
++			if (Date.now() - startTime >= thresholdMs) {
++				reminded = true;
++				return createBudgetFinalizeReminderMessage();
++			}
++			return undefined;
++		},
++	};
++}
++
++function createBudgetFinalizeReminderMessage(): AgentMessage {
++	const text =
++		`[system] You are approaching this run's wall-clock deadline. When the deadline is reached ` +
++		`the run is force-terminated and only a result you have already saved and submitted through the ` +
++		`task's submission mechanism will count \u2014 unfinished or unsubmitted work is lost. Stop expanding ` +
++		`scope now: do not start new experiments, refactors, or open-ended exploration you may not finish. ` +
++		`Take your single best working solution so far, write it to the expected output location, explicitly ` +
++		`submit/finalize it, and give your final answer. Only after your best result is secured may you use ` +
++		`any remaining time for small, low-risk improvements that you re-save immediately.`;
++	return {
++		role: "user",
++		content: [{ type: "text", text }],
++		timestamp: Date.now(),
++	};
++}
+diff --git a/packages/agent/src/harness/agent-harness.ts b/packages/agent/src/harness/agent-harness.ts
+index cbc2d0a..2ff79b7 100644
+--- a/packages/agent/src/harness/agent-harness.ts
++++ b/packages/agent/src/harness/agent-harness.ts
+@@ -150,6 +150,15 @@ function normalizeHookError(error: unknown): AgentHarnessError {
+ 	return normalizeHarnessError(error, "hook");
+ }
+ 
++/**
++ * Default total wall-clock run budget (2 hours) used to drive the low-level
++ * loop's deadline-aware finalize reminder when the caller does not specify
++ * `runBudgetMs`. Matches the fixed external deadline of RSIBench-style task
++ * runs, so the agent is prompted to secure its best result before it is
++ * force-terminated.
++ */
++const DEFAULT_RUN_BUDGET_MS = 2 * 60 * 60 * 1000;
++
+ interface AgentHarnessTurnState<
+ 	TContext extends object | undefined,
+ 	TSkill extends Skill = Skill,
+@@ -193,6 +202,7 @@ export class AgentHarness<
+ 	private steeringQueueMode: QueueMode;
+ 	private followUpQueue: UserMessage[] = [];
+ 	private followUpQueueMode: QueueMode;
++	private runBudgetMs: number;
+ 	private nextTurnQueue: AgentMessage[] = [];
+ 	private handlers = new Map<string, Set<AgentHarnessHandler>>();
+ 
+@@ -220,6 +230,11 @@ export class AgentHarness<
+ 		this.validateToolNames(this.activeToolNames);
+ 		this.steeringQueueMode = options.steeringMode ?? "one-at-a-time";
+ 		this.followUpQueueMode = options.followUpMode ?? "one-at-a-time";
++		// Default run budget so the loop's deadline-aware finalize reminder is
++		// active on the default task-agent path. RSIBench task runs are bounded by
++		// a fixed ~2h external deadline; a positive budget lets the loop prompt the
++		// agent to secure its best result before force-termination. 0 disables it.
++		this.runBudgetMs = options.runBudgetMs ?? DEFAULT_RUN_BUDGET_MS;
+ 	}
+ 
+ 	private getHandlers(type: string): Set<AgentHarnessHandler> | undefined {
+@@ -494,6 +509,7 @@ export class AgentHarness<
+ 			},
+ 			getSteeringMessages: async () => this.drainQueuedMessages(this.steerQueue, this.steeringQueueMode),
+ 			getFollowUpMessages: async () => this.drainQueuedMessages(this.followUpQueue, this.followUpQueueMode),
++			runBudgetMs: this.runBudgetMs,
+ 		};
+ 	}
+ 
+diff --git a/packages/agent/src/harness/types.ts b/packages/agent/src/harness/types.ts
+index 7a217ae..ba0db74 100644
+--- a/packages/agent/src/harness/types.ts
++++ b/packages/agent/src/harness/types.ts
+@@ -937,6 +937,15 @@ interface AgentHarnessOptionsBase<
+ 	activeToolNames?: string[];
+ 	steeringMode?: QueueMode;
+ 	followUpMode?: QueueMode;
++	/**
++	 * Total wall-clock budget for a run, in milliseconds. Forwarded to the
++	 * low-level agent loop as `runBudgetMs`. When positive, the loop injects a
++	 * single advisory "finalize now" reminder near the deadline so the agent
++	 * deliberately saves/submits its best result before an external deadline
++	 * force-terminates the run. Set to 0 to disable; omit to use the harness
++	 * default.
++	 */
++	runBudgetMs?: number;
+ }
+ 
+ export type AgentHarnessOptions<
+diff --git a/packages/agent/src/types.ts b/packages/agent/src/types.ts
+index 52f3489..50a65f9 100644
+--- a/packages/agent/src/types.ts
++++ b/packages/agent/src/types.ts
+@@ -284,6 +284,27 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
+ 	 * The hook receives the agent abort signal and is responsible for honoring it.
+ 	 */
+ 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
++
++	/**
++	 * Total wall-clock budget for this run, in milliseconds.
++	 *
++	 * RSIBench-style task runs are bounded by a fixed external deadline and are
++	 * force-terminated when it elapses; only a result the agent has already
++	 * saved/submitted counts. The low-level loop otherwise has no awareness of
++	 * elapsed time, so an agent doing steady, productive-but-open-ended work
++	 * keeps taking incremental actions until it is killed and never proactively
++	 * secures its best result.
++	 *
++	 * When set to a positive value, the loop injects exactly one non-blocking
++	 * "finalize now" reminder once elapsed time crosses a high fraction of this
++	 * budget (see BUDGET_FINALIZE_FRACTION), telling the agent to stop expanding
++	 * scope and explicitly save/submit its single best working result before the
++	 * deadline. It is advisory: the agent may keep working.
++	 *
++	 * Set to 0 (or omit) to disable deadline awareness and preserve historical
++	 * unbounded behavior. An explicit positive value always takes precedence.
++	 */
++	runBudgetMs?: number;
+ }
+ 
+ /**
