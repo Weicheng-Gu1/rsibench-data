@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "change_id": "round-02-completion-discipline-shared-prompt",
+  "layer": "shared_resource",
+  "primary_module": "SHARED_PROMPT",
+  "compound_modules": [],
+  "files": [
+    ".pi/APPEND_SYSTEM.md"
+  ],
+  "requires_rebuild": false,
+  "failure_evidence": [
+    "task=terminal-bench-configure-git-webserver; failure_repeat=1; action=action_03 (installed only git+nginx, never openssh-server/sshd) plus final judgment deferring the observed gap ('there's no SSH daemon listening on port 22 — since you're handling login setup yourself, just make sure sshd is installed and running'); verifier=test_hello_html_exists failed: SSH clone unreachable, downstream git commands 'fatal: not a git repository', curl HTTP 404; pass_repeat=0 (installed openssh-server, started sshd, replayed exact SSH clone user@localhost:/git/server, fixed StrictModes home perms and GIT_WORK_TREE hook, left services running); trajectories /app/pi-source-evidence/references/c52b4771c9928faa-trajectory.jsonl vs /app/pi-source-evidence/references/3a4e9b31187d4f5d-trajectory.jsonl",
+    "task=terminal-bench-configure-git-webserver; failure_repeat=2; action=action_22 (validated only via local path 'runuser -u user -- git clone /git/server' and action_27 curl localhost; never exercised the user's SSH interface; <REDACTED_USER_HOME> left mode 777 so sshd StrictModes rejects the user's authorized_keys); verifier=same test failure: HTTP 404 + 'fatal: not a git repository'; pass_repeat=0; trajectory /app/pi-source-evidence/references/abb93a3cec764f86-trajectory.jsonl",
+    "task=terminal-bench-tune-mjcf; failure_repeat=2; action=action_30 at 858s (launched a 900s variant sweep 'python mkvariants3.py' after the winning PGS config was proven at 676s; /app/model.xml left stale with the known-broken timestep=0.004 variant); verifier=test_correctness failed on stale model.xml after the 900s agent timeout; pass_repeat=0 (persisted model.xml at 605s) and 1 (395s); trajectory /app/pi-source-evidence/references/32b7cfcc4c5e8cee-trajectory.jsonl",
+    "task=terminal-bench-raman-fitting; failure_repeat=1; action=actions 468s-889s kept refining background models after the correct Raman-space G fit (x0=1580.501±0.109, gamma=8.975) was in hand; verifier=/app/results.json absent at timeout, 0/3 tests passed; pass_repeat=none; trajectory /app/pi-source-evidence/references/931f4ca4ac22609c-trajectory.jsonl",
+    "/app/pi-source-evidence/references/134bbcd3e0b2a280-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/ead8d232816c233f-terminal-bench-configure-git-webserver.json",
+    "/app/pi-source-evidence/references/39b7a3d5252a6e53-evolution-history.json"
+  ],
+  "root_cause": "Two independent missing-guidance defects in the task agent's always-visible system prompt. (1) No completion discipline requiring validation through the requester's exact interface: failing repeats substitute local approximations (runuser/local-path clone) for the user's stated remote workflow and defer discovered gaps (no sshd) to the requester, so user-facing prerequisites are broken at handoff even though the agent believes it verified end-to-end; the same-task passing repeat differs precisely in replaying the exact user commands. (2) No always-present discipline to persist the working deliverable early and keep it updated: agents with a verified solution in hand continue open-ended exploration or refinement until the external timeout kills the run with the deliverable unwritten or stale (tune-mjcf r2, raman-fitting r1, and per the frozen opportunity index also largest-eigenval r0, which died micro-optimizing an already 2/3-passing solution). Runtime components executed correctly at these moments (skills loaded, tools ran, observations delivered), so the causal break is absent guidance, not broken runtime; round-01's runtime time-telemetry attempt at this family was gate-rejected for pass-level regressions and is not being rephrased or relocated.",
+  "mechanism": "Added two compact, task-general completion-discipline paragraphs to .pi/APPEND_SYSTEM.md: (a) persist the requested deliverable to its exact target path as soon as a working version exists, keep it updated, never leave it in memory, a scratch file, or an experimental state, and lock in the best working result on disk before further exploration or optimization; (b) before declaring done, validate through the exact path the requester described — replay their stated commands end-to-end with the same host, protocol, user, and working directory rather than a local shortcut, treat every service, daemon, permission, or dependency those commands rely on as yours to install, run, and fix before finishing (the requester manages only their own credentials), fix discovered gaps instead of deferring them in the final report, then re-read the deliverable and confirm it still contains the verified result in the requested format. Pi's DefaultResourceLoader (packages/coding-agent/src/core/resource-loader.ts, project .pi/APPEND_SYSTEM.md) appends this content unconditionally to the system prompt of every task-agent run, so the guidance is visible at the planning moment (repeat_01's install decision), at the verification moment (repeat_02's local-shortcut test), and throughout long runs (persistence decisions).",
+  "evidence_basis": "multiple_independent_objectives",
+  "prior_attempt_disposition": "new_direction",
+  "why_this_component": "SHARED_PROMPT is the only shared resource visible in every turn of every task, which is required because both defects occur at arbitrary moments (setup-time service decisions, mid-run persistence decisions, final verification). The verify-work skill is description-gated: repeat_01 never read it, and repeat_02 read it but its generic text ('run the smallest relevant validation') did not prevent the local-shortcut verification, so unconditional prompt-level guidance is the stronger lever and avoids duplicating a skill. Source-level owners were inspected and are not defective at the cited moments: bash/edit/write executed correctly (PI_SRC_TOOL_RUNTIME), observations delivered command output faithfully (PI_SRC_OBSERVATION), skills_loaded=['verify-work'] shows discovery and loading worked (PI_SRC_RESOURCE_LOADER/SKILL_LOADER), and APPEND_SYSTEM.md is discovered and appended on the default RSIBench path (resource-preflight/prompt-load-smoke checks). Per the developer guide, a genuinely missing general strategy belongs in SHARED_PROMPT rather than a source module, and source preference must not override this failure evidence; no SHARED_PROMPT rejection has occurred in this experiment, so the module remains eligible.",
+  "predicted_fixes": [
+    "terminal-bench-configure-git-webserver repeats 1 and 2 flip to pass: the agent installs and starts sshd, replays the user's SSH clone path before finishing, hits the StrictModes rejection, fixes <REDACTED_USER_HOME> permissions, and the verifier's clone/push/curl workflow returns 'hello world'",
+    "terminal-bench-tune-mjcf repeat_2 flips or strongly improves: the winning PGS configuration is written to /app/model.xml before further variant sweeps, so test_correctness passes or the task gains a passing artifact",
+    "terminal-bench-raman-fitting repeats 1 and 2 improve: /app/results.json is written as soon as correct fits exist (at minimum partial credit; the re-read-deliverable clause also pressures repeat_2's completed-but-wrong-units runs)",
+    "possible assists on terminal-bench-largest-eigenval repeats 0/1 and terminal-bench-model-extraction-relu-logits repeat_2: lock in the already-passing deliverable instead of open-ended polish until timeout",
+    "no change expected for tasks that already verify end-to-end and persist artifacts (regex-log, build-cython-ext, qemu-alpine-ssh, headless-terminal, write-compressor, cobol-modernization, sanitize repeats 0/1)"
+  ],
+  "regression_risks": [
+    "'lock in the best working result before further exploration' could reduce exploration depth on long-budget tasks that pass late (make-mips passes finished at 1600-1800s); mitigated by phrasing that mandates persistence, not stopping",
+    "about 1KB of added system-prompt text is paid by every task (attention dilution); kept to three short paragraphs of observable actions and stopping criteria",
+    "replay-exact-commands discipline adds verification turns on already-passing tasks; worst case is a few extra tool calls within budget",
+    "on tasks where the requester's stated workflow is genuinely unavailable (no reachable peer), the guidance could add some wasted reproduction attempts before the agent concludes the path cannot be tested"
+  ],
+  "targeted_checks": [
+    "rerun terminal-bench-configure-git-webserver repeats 1 and 2: trajectory must show sshd installed/running and an SSH-path clone test (user@host, key-based) before completion and the verifier test_hello_html_exists must pass; finishing without SSH-path verification or a repeat 404 falsifies objective A",
+    "rerun terminal-bench-tune-mjcf repeat_2: /app/model.xml must be updated to the winning configuration before timeout and test_correctness must pass; a stale model.xml at timeout falsifies objective B",
+    "pass-to-fail watch on the longest-running currently-passing tasks (make-mips-interpreter repeats 0/1, cobol-modernization repeats 0-2, qemu-alpine-ssh, build-cython-ext, regex-log) to bound the exploration-depth and dilution risks",
+    "prompt-load check (in-sandbox, already run): the file loads via the real loader path with content intact and the frozen candidate checker passes (npm-ci-offline, build-offline, pi-cli-smoke; candidate_sha256 e0457dba0257e7c58359051aad726f9e95dde3cfc875632202c1d399b6e7d4c7)"
+  ],
+  "analysis_tags": [
+    "within_task_contrast",
+    "cross_task_pattern",
+    "multiple_independent_objectives",
+    "completion-discipline",
+    "exact-interface-verification",
+    "deliverable-persistence",
+    "SHARED_PROMPT",
+    "timeout-cluster",
+    "non-timeout-judgment-failure",
+    "handoff-gap"
+  ]
+}

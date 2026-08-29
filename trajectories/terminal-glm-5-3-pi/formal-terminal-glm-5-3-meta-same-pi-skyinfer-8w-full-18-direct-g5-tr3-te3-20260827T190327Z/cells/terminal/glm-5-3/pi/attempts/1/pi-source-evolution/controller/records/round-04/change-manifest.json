@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "change_id": "round-04-bash-time-telemetry-persistence-advisory",
+  "layer": "agent_core_source",
+  "primary_module": "PI_SRC_TOOL_RUNTIME",
+  "compound_modules": [],
+  "files": [
+    "packages/coding-agent/src/core/tools/bash.ts"
+  ],
+  "requires_rebuild": true,
+  "failure_evidence": [
+    "task=terminal-bench-tune-mjcf; failure_repeat=2; action=at session +858s launched `python mkvariants3.py` with timeout=900 (trajectory line 44) after the winning PGS/dense config was proven at +676s (line 39-40: 'PGS solver is dramatically faster (43%) and passes accuracy on 15 seeds'), leaving /app/model.xml holding the known-broken timestep=0.004 variant written at +128s; verifier=test_correctness failed on stale model.xml (4 tests, 3 passed, reward 0) at the 900s agent timeout; pass_repeat=0 persisted the winning model.xml at +605s and verified 2.20x; trajectories /app/pi-source-evidence/references/32b7cfcc4c5e8cee-trajectory.jsonl vs /app/pi-source-evidence/references/5a7a465cf780ce2c-trajectory.jsonl",
+    "task=terminal-bench-raman-fitting; failure_repeat=1; action=from +691s to +889s kept refitting background models after correct Raman-space parameters were already in hand (G x0=1580.555 gamma=8.704 A=8360.3 at +732s; 2D x0=2670.307 gamma=17.382 A=12321.0 off=1232.2 at +805s, all inside verifier tolerances x0 1580.3/2670.08) and never wrote /app/results.json; verifier=all 3 tests failed on missing results.json at the 900s timeout; pass_repeat=none; trajectory /app/pi-source-evidence/references/931f4ca4ac22609c-trajectory.jsonl",
+    "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=1; action=after all 43 self-tests passed at +780s, spent +780s..+891s chasing a cosmetic KS-ties warning instead of finalizing deliverable files in the requested loadable format; verifier=8/9 tests passed, only test_sample_files_generated failed because normal_samples.txt carried a quoted header np.loadtxt cannot parse; pass_repeat=none; trajectory /app/pi-source-evidence/references/ae8d09f7ec0acbfd-trajectory.jsonl",
+    "/app/pi-source-evidence/references/76347bbd47be42f3-training-failures.json",
+    "/app/pi-source-evidence/references/83dd59e1bfabcf89-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/140fa1fcfd4f5ac2-evolution-history.json"
+  ],
+  "root_cause": "The model-visible bash observation carries zero wall-clock information: Pi renders command duration only in the TUI, so on the default task-agent path a 300-860s command looks identical to a 2s one and the agent has no signal of how much session time it has consumed. At the cited decision moments (+676..+858s of a 900s budget) the failing repeats therefore chose open-ended refinement (another 900s sweep, more background models, a cosmetic warning) over persisting an already-verified deliverable, and the external harness timeout killed the run with the deliverable stale (tune-mjcf r2) or unwritten (raman r1). The same-task passing repeat differs precisely in making the persist decision early (+605s) with no harness-side difference. This is the earliest causal break: the runtime never surfaces time, so the correct strategy (persist verified results) is never triggered at the right moment.",
+  "mechanism": "packages/coding-agent/src/core/tools/bash.ts now appends wall-clock telemetry to every completed bash observation (success, non-zero exit, timeout, and abort paths): `[bash completed in <duration>s | session elapsed: <N>s]`. Session start is decoded from the first 48 bits of the UUIDv7 session id obtained via ctx.sessionManager.getSessionId(), which reaches execute on the default RSIBench path (sdk createCodingTools -> createBashTool -> AgentSession wrapRegisteredTools -> wrapToolDefinition(runner.createContext)); without a UUIDv7 id or ctx the footer degrades to duration-only. When session elapsed >= 600s (or >= 75% of PI_SESSION_TIME_BUDGET_SECONDS when set to a positive number, e.g. 1350s of a 1800s budget), at most 3 times per session, a one-line non-terminal advisory is appended: if any requested deliverable is not saved on disk yet, write the best current working version to its requested location and format now and keep it updated; you can continue working afterward; otherwise continue as planned. The footer/advisory live inside the stored toolResult text, so provider prompt-cache prefixes stay stable. Unlike rejected round-01, the advisory is capped at 3 emissions and contains no exploration-discouraging directive ('prefer short incremental steps', 'do not leave the deliverable in an experimental state') that plausibly caused its regressions on late-finishing tasks; unlike round-03 it adds no extra model turn and never fires on healthy short runs (2/3 write-compressor repeats end before 600s).",
+  "evidence_basis": "within_task_contrast",
+  "prior_attempt_disposition": "new_direction",
+  "why_this_component": "PI_SRC_TOOL_RUNTIME owns bash result construction, the exact layer that currently drops the time dimension from model-visible observations, and bash is on the default RSIBench execution path exercised by every failing trajectory's decisive phase (verified live in print mode). Round-01 in this same module measured candidate 0.6667 vs baseline 0.6222 with adaptive-rejection-sampler flipped to pass, configure-git-webserver/largest-eigenval/tune-mjcf improved and zero pass-to-fail, so the measured flips support the telemetry+persistence mechanism; its gate rejection falsified the repeated, behavior-restricting advisory text on late-finishing tasks, which this candidate removes rather than relocates. Shared-resource alternatives were considered and rejected: SHARED_PROMPT is barred after round-02's rejection, and round-02/round-03 showed always-on guidance and extra completion turns net-regress; a static prompt also cannot fire at the elapsed-time moment where the divergence occurs.",
+  "predicted_fixes": [
+    "terminal-bench-tune-mjcf repeat_2 flips to pass: at the +676s or +845s bash completion the time check makes persisting the proven PGS config to /app/model.xml the next action instead of the +858s 900s sweep; test_correctness then passes (same config family as passing repeats 0/1)",
+    "terminal-bench-raman-fitting repeat_1 flips to pass: advisory between +691s and +805s prompts writing /app/results.json with the already-correct Raman-space G/2D parameters before timeout",
+    "terminal-bench-adaptive-rejection-sampler repeat_1 flips or improves: advisory after +780s redirects the KS-warning detour toward finalizing normal_samples.txt/exponential_samples.txt in a format np.loadtxt parses",
+    "possible assists on raman repeat_2 and largest-eigenval repeats 0/1 (ship the best verified variant instead of open-ended polish until timeout)",
+    "no behavioral change expected for runs that finish before 600s or that already persist deliverables continuously (write-compressor 2/3 repeats, regex-log, qemu-alpine-ssh, headless-terminal, build-cython-ext, sanitize repeats 0/1)"
+  ],
+  "regression_risks": [
+    "Marginal timeout-bound passes (cobol-modernization 3/3 ending 747-894s, make-mips-interpreter 2/3 on a 1800s budget, model-extraction-relu-logits 2/3 ending 847-897s) may see up to 3 advisory lines mid-run; mitigated by explicitly non-terminal phrasing and the 3-emission cap, but these same tasks regressed under two mechanistically different prior candidates (including one that never fires mid-run), so residual sampling noise on them cannot be excluded",
+    "~15-40 extra tokens per bash result and up to 3 advisory lines add context on very long sessions; bounded and appended after output so prompt-cache prefixes stay stable",
+    "If the session id is not UUIDv7 the elapsed signal degrades to duration-only (no pacing signal, no regression); abort/timeout error results also carry the footer, which only adds information",
+    "A model could over-interpret the advisory as a stop signal; phrasing says 'you can continue working afterward' and 'otherwise continue as planned', and round-01's measured flips with a stronger advisory argue against net harm"
+  ],
+  "targeted_checks": [
+    "rerun terminal-bench-tune-mjcf repeat_02 with the candidate: trajectory must show the time-check advisory on a late bash result and /app/model.xml updated to the winning configuration before session end with test_correctness passing; a stale timestep-0.004 model.xml at timeout falsifies the mechanism",
+    "rerun terminal-bench-raman-fitting repeat_01: /app/results.json must exist at timeout with Raman-space values (G x0 near 1580.3, 2D near 2670.08); absence falsifies the mechanism",
+    "rerun terminal-bench-adaptive-rejection-sampler repeat_01: sample files must be finalized in np.loadtxt-parseable format (9/9 tests); an unparseable header at timeout falsifies",
+    "pass-to-fail watch on make-mips-interpreter repeats 0/1, cobol-modernization, model-extraction-relu-logits, and write-compressor to bound the advisory-intrusion risk",
+    "in-sandbox functional checks (already run): footer on success/non-zero-exit/timeout paths, advisory only at >=600s, 3-emission cap per session, PI_SESSION_TIME_BUDGET_SECONDS relative threshold, graceful degradation without ctx or with non-UUIDv7 ids, end-to-end print-mode runs showing the footer and advisory in the real model-visible toolResult; frozen candidate checker green (npm-ci-offline, build-offline, pi-cli-smoke, candidate_sha256 1315e6f7826f3730)"
+  ],
+  "analysis_tags": [
+    "deadline-aware-observation",
+    "time-telemetry",
+    "adaptive-persistence",
+    "timeout-cluster",
+    "PI_SRC_TOOL_RUNTIME",
+    "bash-observation-fidelity",
+    "uuidv7-session-clock",
+    "within_task_contrast",
+    "cross_task_pattern",
+    "refined-round-01-per-feedback"
+  ]
+}
