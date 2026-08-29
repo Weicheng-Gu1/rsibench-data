@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Dominant training failure is agent-timeout: 12 of 15 tasks recorded 'SForge agent reached its configured task timeout', and mechanism-evidence shows these runs consumed the whole ~7200s budget in very few turns (a single blocking tool call, not a repeated one). Sharpest within-task contrast is edgebench-vibrating_path_graph_coloring: failing repeat_00 hung with only message_count=23 / total_tokens=360953 over 7200s at reward 0.0 (timed_out=true, agent_submissions=0), while non-timeout repeat_01 cycled message_count=92 / 4.5M tokens in 5815s and reached reward 0.52 (termination_reason=agent_completed). The bash tool ships with NO default timeout, so a hung command blocks a single tool call until the external budget is exhausted, leaving no finalized result. Round-01's stagnation guard only catches repeated identical calls, not a single blocking call. The fix adds a bounded default per-command wall-clock ceiling (600s) in the coding-agent bash tool, overridable by an explicit larger 'timeout' and disable-able via defaultTimeout=0; the default RSIBench path (createCodingToolDefinitions with no bash options) now applies it. Build and CLI smoke pass; git diff confirms the single-file change is present.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "bash-default-timeout-01",
+    "failure_evidence": [
+      "task=edgebench-vibrating_path_graph_coloring; failure_repeat=0; action=action_NN a bash command hung inside a single tool call (only message_count=23, total_tokens=360953 across 7200s of wall time); verifier=SForge agent reached its configured task timeout (reward 0.0, timed_out=true, agent_submissions=0); pass_repeat=1 (message_count=92, total_tokens=4508989, termination_reason=agent_completed, reward 0.52)",
+      "/app/pi-source-evidence/references/388e304e9c1802f3-pi-mechanism-evidence.json",
+      "/app/pi-source-evidence/references/9c2858efe3f074a8-pi-mechanism-evidence.json",
+      "/app/pi-source-evidence/references/e2a81c642c498b47-training-opportunity-index.json",
+      "training_mean_reward=0.231050",
+      "failed_or_partial_trajectories=45"
+    ],
+    "root_cause": "The bash tool (packages/coding-agent/src/core/tools/bash.ts) applies a wall-clock timeout to a command only when the model passes an explicit 'timeout'; the schema and description advertise 'no default timeout'. When a command blocks (unreachable network poll, foreground server, infinite-loop test, stuck build/proof), that single tool call stays open until the external task timeout kills the run, consuming the entire budget in a handful of turns and leaving no finalized/submitted result. This is a distinct failure mode from round-01's repeated-identical-call stagnation guard, which never triggers on one long-blocking call.",
+    "mechanism": "createBashToolDefinition now resolves an effectiveTimeout: when the model omits 'timeout', it applies DEFAULT_COMMAND_TIMEOUT_SECONDS (600s), configurable via the new BashToolOptions.defaultTimeout (0 disables to preserve historical unbounded behavior). An explicit model-supplied timeout always takes precedence. On a default-limit timeout the existing timeout path returns the accumulated output plus an augmented observation telling the model the command was still running and to re-run with a larger explicit timeout or treat the resource as unavailable. The default RSIBench task-agent path builds bash via createCodingToolDefinitions(cwd) with no bash options, so the 600s ceiling is the actual default-path consumer; the model's next turn observes the timeout instead of the run silently expiring.",
+    "evidence_basis": "within_task_contrast",
+    "prior_attempt_disposition": "new_direction",
+    "why_this_component": "The defect is incorrect tool execution timeout behavior (a blocking command never yields control), which is PI_SRC_TOOL_RUNTIME's responsibility per module guidance ('tool ... timeout ... is wrong'). It is not missing task guidance (a shared-resource nudge cannot forcibly bound a blocked child process) and not agent-loop turn control (the loop never sees the turn end because the tool call itself never returns). The bash tool is the single point that spawns and awaits every command on the default path.",
+    "predicted_fixes": [
+      "Runs that previously hung inside one blocking command (vibrating_path_graph_coloring, graph_node_classification, openttd_transport_ai, exchange_core_throughput, dcss_dungeon_ai, ann_vector_search_qps and other timeout-dominated tasks) now recover control every <=600s, freeing budget for the model to finalize a scoring artifact instead of expiring at reward 0.0.",
+      "Fewer runs end in 'agent reached its configured task timeout', raising mean reward on timeout-dominated tasks where a scoring solution is otherwise reachable.",
+      "The timed-out observation lets the model retry with an explicit larger timeout for genuinely long commands or abandon an unreachable/blocking resource."
+    ],
+    "regression_risks": [
+      "A legitimately long single command (large build, slow Lean/formalization proof) that exceeds 600s is interrupted; mitigated because the model can re-run with an explicit larger 'timeout', the tool description now states this, and partial accumulated output is still returned.",
+      "If a task depends on a foreground long-poll under 600s the behavior is unchanged; only calls exceeding the ceiling are affected.",
+      "Adds one timeout interruption per over-limit call; negligible context cost and strictly less than losing the whole budget."
+    ],
+    "targeted_checks": [
+      "tools",
+      "Re-run pass@3 on edgebench-vibrating_path_graph_coloring and edgebench-graph_node_classification and confirm fewer timeout terminations / higher mean reward; a build+CLI smoke alone would not falsify the causal claim."
+    ],
+    "analysis_tags": [
+      "tool-timeout",
+      "budget-preservation",
+      "blocking-command",
+      "cross-task-timeout"
+    ]
+  }
+}

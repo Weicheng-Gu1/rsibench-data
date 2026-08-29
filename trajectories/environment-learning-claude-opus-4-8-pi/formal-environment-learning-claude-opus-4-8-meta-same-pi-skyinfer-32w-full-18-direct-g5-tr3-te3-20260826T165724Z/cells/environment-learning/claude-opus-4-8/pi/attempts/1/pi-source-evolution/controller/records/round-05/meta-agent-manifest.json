@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "change_id": "agent-loop-stall-same-call-streak-05",
+  "failure_evidence": [
+    "task=edgebench-juliet_vulnerability_analyzer; failure_repeat=2; action=repeated identical 'for i in $(seq 1 15); ... sleep 60' TCP poll of the judge host printing 'attempt N: down' with an incrementing counter each iteration so the byte-identical stall signature never matched; verifier=SForge agent reached its configured task timeout (agent_submissions=0, best captured only at an auto snapshot); pass_repeat=none",
+    "task=edgebench-vibrating_path_graph_coloring; failure_repeat=1; action=ran the full ~7200s budget (message_count=99, 5.8M tokens) with agent_submissions=0 while the captured best_pass_rate stayed at 0.02 (auto-1) despite continued work; verifier=SForge timeout, reward 0.02; pass_repeat=2 (agent_completed, reward 0.48)",
+    "/app/pi-source-evidence/references/210232256f1a73dd-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/b140e632bdfe14c0-training-failures.json",
+    "/app/pi-source-evidence/references/8612d8c81e7001d3-pi-mechanism-evidence.json",
+    "/app/pi-source-evidence/references/7a8f2d5a8db216a0-pi-mechanism-evidence.json",
+    "training_mean_reward=0.235332",
+    "failed_or_partial_trajectories=45",
+    "all_training_trajectories=45"
+  ],
+  "root_cause": "The accepted agent-loop stall guard (createStallTracker in packages/agent/src/agent-loop.ts) only injects its reminder when a turn's full signature (tool calls plus a digest of the tool-result text) is byte-identical for STALL_REPEAT_THRESHOLD consecutive turns. Unproductive loops in the failure evidence poll or retry a resource whose output carries a volatile token (an incrementing 'attempt N' counter, a timestamp, a still-changing 'down' message), so the result-text digest differs every turn, the strict signature never repeats, and the guard never fires. These loops slip past the mechanism and consume the entire external task budget, ending in the configured task timeout with agent_submissions=0 and only a lucky intermediate auto-snapshot recorded as the score.",
+  "mechanism": "createStallTracker now maintains two independent streaks over the same turn stream. The strict streak keys on computeCallSignature(toolCalls) plus computeResultDigest(toolResults) with the unchanged STALL_REPEAT_THRESHOLD (4): same action, identical observation. A new same-call streak keys on computeCallSignature(toolCalls) alone (multiset of tool name plus stably-stringified arguments) with a higher STALL_SAME_CALL_THRESHOLD (6): the agent keeps issuing the exact same tool call while only cosmetic output drifts. When either streak first crosses its threshold, observe() returns exactly one reminder (once per streak; a strict-streak reminder mutes the looser one for that run of identical calls; any no-tool turn or changed call resets both). The reminder is injected into pendingMessages alongside steering/stall messages exactly as before, so the default RSIBench task-agent path's next provider request is its consumer. No new config field or harness wiring is added; the higher same-call threshold keeps genuine iterative work that varies its arguments unaffected.",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "improve_accepted",
+  "why_this_component": "Detecting unproductive repetition and nudging the agent to stop looping is turn-progression/stopping, which is PI_SRC_AGENT_LOOP's responsibility and where the accepted stall guard already lives. The defect is that the existing guard's trigger is too narrow (byte-identical result text) to catch the polling/retry loops present in the trajectories, so the fix belongs in the same detector rather than in shared task guidance (a prompt cannot deterministically detect a same-call streak) or the bash tool (the loop spans multiple turns, not one blocking call). The loop is the single point that observes every tool call and result on the default path.",
+  "predicted_fixes": [
+    "Polling/retry loops whose output carries a changing counter or timestamp (juliet judge-host TCP poll, and similar down/retry loops in dcss_dungeon_ai, exchange_core_throughput, graph_node_classification, openttd_transport_ai) now trigger a reminder after 6 identical same-argument calls instead of never, freeing budget for the agent to finalize a scoring artifact.",
+    "Fewer timeout-dominated runs waste the whole budget re-issuing an unchanging call, raising mean reward on tasks where a scoring solution is otherwise reachable but the loop consumed the budget.",
+    "The one-time nudge encourages the agent to treat an unreachable/unchanging resource as unavailable and secure its best result rather than relying on a lucky intermediate auto-snapshot."
+  ],
+  "regression_risks": [
+    "Genuine iterative work that re-runs the same command with identical arguments while making real out-of-band progress receives one advisory, non-blocking reminder after 6 turns; the agent may continue, so correctness is preserved.",
+    "The looser same-call streak could fire on a legitimate 6x identical build/test invocation; the threshold (6) is higher than the strict one (4) to stay conservative, and the message is advisory only.",
+    "Adds at most one extra user message per stall streak: negligible context cost, strictly less than losing the whole budget to an undetected loop."
+  ],
+  "targeted_checks": [
+    "agent-loop",
+    "cancel-error-smoke",
+    "Re-run pass@3 on edgebench-juliet_vulnerability_analyzer and edgebench-vibrating_path_graph_coloring and confirm same-argument polling/retry loops now receive a reminder and fewer runs end in timeout with agent_submissions=0; a build+CLI smoke alone would not falsify the causal claim."
+  ],
+  "analysis_tags": [
+    "stagnation-detection",
+    "same-call-loop",
+    "turn-control",
+    "budget-preservation",
+    "cross-task-timeout"
+  ]
+}

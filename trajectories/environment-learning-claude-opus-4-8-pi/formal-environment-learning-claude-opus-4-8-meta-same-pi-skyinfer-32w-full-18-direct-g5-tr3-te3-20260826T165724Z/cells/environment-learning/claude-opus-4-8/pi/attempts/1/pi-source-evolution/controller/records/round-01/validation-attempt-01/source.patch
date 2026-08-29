@@ -1,0 +1,143 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 3a12506..0603d8f 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -166,6 +166,15 @@ async function runLoop(
+ 	// Check for steering messages at start (user may have typed while waiting)
+ 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
+ 
++	// Stagnation guard: detect when the agent is repeatedly issuing the same
++	// tool call(s) and getting effectively unchanged results (e.g. polling an
++	// unreachable service, re-running the same validation, or retrying a failing
++	// command in a loop). Left unchecked this silently consumes the entire task
++	// budget on work that produces no new information. When a streak crosses the
++	// threshold, inject a one-time reminder so the model reconsiders instead of
++	// looping until the run is force-terminated.
++	const stall = createStallTracker();
++
+ 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
+ 	while (true) {
+ 		let hasMoreToolCalls = true;
+@@ -223,6 +232,11 @@ async function runLoop(
+ 
+ 			await emit({ type: "turn_end", message, toolResults });
+ 
++			// Detect unproductive repetition. Once per streak this yields a reminder
++			// that we inject as a pending message so the model sees it before its
++			// next response (merged with any steering messages below).
++			const stallReminder = stall.observe(toolCalls, toolResults);
++
+ 			const nextTurnContext = {
+ 				message,
+ 				toolResults,
+@@ -257,6 +271,9 @@ async function runLoop(
+ 			}
+ 
+ 			pendingMessages = (await config.getSteeringMessages?.()) || [];
++			if (stallReminder) {
++				pendingMessages.push(stallReminder);
++			}
+ 		}
+ 
+ 		// Agent would stop here. Check for follow-up messages.
+@@ -790,3 +807,100 @@ async function emitToolResultMessage(toolResultMessage: ToolResultMessage, emit:
+ 	await emit({ type: "message_start", message: toolResultMessage });
+ 	await emit({ type: "message_end", message: toolResultMessage });
+ }
++
++/**
++ * Number of consecutive turns issuing the same tool-call signature and
++ * producing effectively unchanged results before a reminder is injected.
++ */
++const STALL_REPEAT_THRESHOLD = 4;
++
++/**
++ * Tracks unproductive repetition across turns. A turn's "signature" is the
++ * multiset of its tool calls (name + normalized arguments) combined with a
++ * digest of the tool-result text. When the same signature repeats without
++ * producing new information, the agent is almost always stuck in a loop
++ * (polling an unreachable endpoint, retrying a failing command, or
++ * re-validating an unchanged artifact) that would otherwise burn the entire
++ * task budget. The tracker emits a single reminder message per stall streak.
++ */
++function createStallTracker() {
++	let lastSignature: string | undefined;
++	let repeatCount = 0;
++	let remindedForStreak = false;
++
++	return {
++		observe(toolCalls: AgentToolCall[], toolResults: ToolResultMessage[]): AgentMessage | undefined {
++			// Only tool-driven turns can loop unproductively. A turn with no tool
++			// calls resets the tracker: the agent is reasoning or finishing.
++			if (toolCalls.length === 0) {
++				lastSignature = undefined;
++				repeatCount = 0;
++				remindedForStreak = false;
++				return undefined;
++			}
++
++			const signature = computeTurnSignature(toolCalls, toolResults);
++			if (signature === lastSignature) {
++				repeatCount += 1;
++			} else {
++				lastSignature = signature;
++				repeatCount = 1;
++				remindedForStreak = false;
++			}
++
++			if (repeatCount >= STALL_REPEAT_THRESHOLD && !remindedForStreak) {
++				remindedForStreak = true;
++				return createStallReminderMessage(repeatCount);
++			}
++			return undefined;
++		},
++	};
++}
++
++function computeTurnSignature(toolCalls: AgentToolCall[], toolResults: ToolResultMessage[]): string {
++	const callParts = toolCalls
++		.map((tc) => `${tc.name}\u0000${stableStringify(tc.arguments)}`)
++		.sort();
++	const resultDigest = toolResults.map((tr) => toolResultText(tr)).join("\u0001");
++	return `${callParts.join("\u0002")}\u0003${resultDigest}`;
++}
++
++function toolResultText(toolResult: ToolResultMessage): string {
++	if (!Array.isArray(toolResult.content)) {
++		return "";
++	}
++	return toolResult.content
++		.map((part) => (part && part.type === "text" && typeof part.text === "string" ? part.text : ""))
++		.join("");
++}
++
++function stableStringify(value: unknown): string {
++	try {
++		if (value === null || typeof value !== "object") {
++			return JSON.stringify(value) ?? "";
++		}
++		if (Array.isArray(value)) {
++			return `[${value.map((v) => stableStringify(v)).join(",")}]`;
++		}
++		const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
++		return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
++	} catch {
++		return "";
++	}
++}
++
++function createStallReminderMessage(repeatCount: number): AgentMessage {
++	const text =
++		`[system] You have now repeated the same tool call(s) ${repeatCount} times in a row with ` +
++		`no new information in the results. Repeating an unchanged action will not change its outcome ` +
++		`and is consuming your limited time/token budget. Stop and reconsider: if you are polling or ` +
++		`retrying an unreachable, unresponsive, or unchanging resource, treat it as unavailable and do ` +
++		`not keep retrying it. If your work is already complete or as good as it can be, finalize it now ` +
++		`(save/submit your best result and give your final answer) rather than continuing to re-verify. ` +
++		`Otherwise, take a materially different action.`;
++	return {
++		role: "user",
++		content: [{ type: "text", text }],
++		timestamp: Date.now(),
++	};
++}
