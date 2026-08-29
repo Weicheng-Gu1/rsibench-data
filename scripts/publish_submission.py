@@ -13,8 +13,14 @@ from typing import Any
 
 
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    # Receipt publication only needs tracked pointer files.  Disable optional
+    # hooks and LFS filters so runners without git-lfs can create worktrees.
     return subprocess.run(
-        ["git", "-C", str(repo), *args],
+        [
+            "git", "-c", "core.hooksPath=/dev/null",
+            "-c", "filter.lfs.process=", "-c", "filter.lfs.smudge=cat",
+            "-c", "filter.lfs.required=false", "-C", str(repo), *args,
+        ],
         check=check,
         text=True,
         capture_output=True,
