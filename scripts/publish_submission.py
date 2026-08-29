@@ -13,8 +13,21 @@ from typing import Any
 
 
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    # The data repository may carry a Git-LFS post-checkout hook, while the
+    # GitHub Actions runner and local submitter intentionally publish only the
+    # small trajectory pointers selected by the publisher.  Disable hooks and
+    # LFS filters for every temporary checkout so a missing optional git-lfs
+    # executable cannot invalidate an otherwise valid receipt.
     return subprocess.run(
-        ["git", "-C", str(repo), *args],
+        [
+            "git",
+            "-c", "core.hooksPath=/dev/null",
+            "-c", "filter.lfs.process=",
+            "-c", "filter.lfs.smudge=cat",
+            "-c", "filter.lfs.required=false",
+            "-C", str(repo),
+            *args,
+        ],
         check=check,
         text=True,
         capture_output=True,
