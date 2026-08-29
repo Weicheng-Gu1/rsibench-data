@@ -1,0 +1,522 @@
+{
+  "schema_version": 2,
+  "purpose": "Falsifiable cross-round memory without controller-defined semantic mechanism classes. The Meta-agent owns causal interpretation.",
+  "attempts": [
+    {
+      "candidate_id": "round-01",
+      "status": "rejected",
+      "reason": "direct_full_training_severe_task_regression",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-01-wallclock-checkpoint-resume",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [
+          "PI_SRC_PROVIDER_RUNTIME"
+        ],
+        "files": [
+          "packages/agent/src/agent-loop.ts",
+          "packages/ai/src/api/openai-completions.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=terminal-bench-headless-terminal; failure_repeat=0; action=action_04 assistant generation after tool results at t+30.6s never completed in the remaining ~869s (zero further session events, no /app/headless_terminal.py); verifier=ModuleNotFoundError: headless_terminal, 0/7 tests passed; pass_repeat=1 (/app/pi-source-evidence/references/990819ef9670b7f8-trajectory.jsonl completed in 15 turns/559s)",
+          "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=0; action=action_05 generation after Rscript install tool result at t+97.9s consumed the remaining ~800s without completing; verifier=reward 0 (no /app/ars.R written); pass_repeat=2 (/app/pi-source-evidence/references/8c982212f5784400-trajectory.jsonl)",
+          "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=1; action=action_06 generation after R-version tool result at t+214.9s never completed; verifier=reward 0; pass_repeat=2",
+          "task=terminal-bench-tune-mjcf; failure_repeat=1; action=action_02 generation after initial exploration tool results at t+3.6s never completed; verifier=AssertionError 'Tuned model file does not exist' (/app/model.xml missing); pass_repeat=0",
+          "task=terminal-bench-write-compressor; failure_repeat=1; action=action_03 second assistant turn already took ~310s wall for 15k output tokens, third generation never completed in remaining budget; verifier=reward 0; pass_repeat=0,2 (passing turns act in bounded increments)",
+          "task=terminal-bench-model-extraction-relu-logits; failure_repeat=2; action=action_01 first turn alone streamed ~642s (15577 reasoning tokens) leaving ~245s, third generation unfinished at cap; verifier=reward 0; pass_repeat=0,1 (pass_repeat=0 shows one ~635s single turn can legitimately nearly exhaust a 900s budget)",
+          "/app/pi-source-evidence/references/a09f283b6fc05ec6-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/352d5f6c370da66a-training-failures.json"
+        ],
+        "root_cause": "A single provider response has no wall-clock bound. With kimi-k3 via the OpenAI-completions stream, one turn can legitimately stream >600s of output (15k+ reasoning tokens); when such a turn's generation exceeds the remaining task budget (or stalls into it), the existing 300s idle watchdog never fires because chunks keep arriving, nothing is persisted, and the external 900s kill discards the entire pending generation — the run produces zero artifacts. Separately, when a response is truncated (token limit / salvage), the agent loop ends the run if the truncated message contains no tool calls, so partial progress is abandoned unacknowledged.",
+        "mechanism": "packages/ai/src/api/openai-completions.ts: add a one-shot per-response wall-clock deadline (default 300s, PI_STREAM_MAX_DURATION_MS override, 0 disables) combined into the request abort signal; when it fires mid-stream, the catch finalizes all already-streamed blocks (best-effort tool-call argument salvage) as stopReason 'length' with a descriptive errorMessage and pushes done — instead of an error that discards the partial output. packages/agent/src/agent-loop.ts: when a streamed assistant message ends bare stopReason 'length' with no tool calls, the loop emits turn_end, injects a continuation user message ('resume with concrete tool calls now, in smaller increments') as a pending steering message, and starts a new turn, up to 5 consecutive resumes; the counter resets on normal or tool-calling turns. Net effect: overlong generations are checkpointed and resumed with content preserved; the model acts incrementally instead of the run ending mid-task or the response vanishing.",
+        "evidence_basis": "within_task_contrast",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The wire-level overlong-stream bound belongs to PI_SRC_PROVIDER_RUNTIME (openai-completions.ts is the exact api path used by every failed trajectory: api=openai-completions; the file already owns the analogous idle watchdog); the stop/progression decision on truncated turns is exactly PI_SRC_AGENT_LOOP's documented concern ('the agent stops before acting when it shouldn't'). Both are on the default RSIBench path: streamAssistantResponse consumes the 'length' done event, and runLoop emits the resume — no new API without a default-path consumer.",
+        "predicted_fixes": [
+          "Stall-class failures (headless-terminal repeat 0, adaptive-rejection-sampler repeats 0/1, tune-mjcf repeat 1, write-compressor repeat 1) checkpoint at 300s per response, persist partial reasoning, and continue acting via tool calls within the 900s budget — expected fail-to-pass flips",
+          "Length-truncated bare turns (token limit) no longer silently end runs; the model resumes from preserved content",
+          "Multi-hundred-second single turns in otherwise slow runs (model-extraction, largest-eigenval, cobol-modernization, gcode-to-text) become bounded checkpointed segments with preserved context, reducing total-loss risk at the external deadline"
+        ],
+        "regression_risks": [
+          "Legitimate one-shot ~640s turns (e.g. model-extraction pass repeat 0) become 2-3 resumed segments: same total generation time plus re-prefill overhead per segment (mitigated by prompt-cache reads); content is preserved in context so the reasoning continues",
+          "A pathological provider that truncates every response burns up to 5 resume segments (capped) before the run ends as before",
+          "Synthetic continuation user messages appear in session history (transparent, self-describing text); interactive flows see the same benign steering-style message"
+        ],
+        "targeted_checks": [
+          "provider-stream",
+          "agent-loop",
+          "tool-call-parsing",
+          "task-flip watch: terminal-bench-headless-terminal, terminal-bench-adaptive-rejection-sampler, terminal-bench-tune-mjcf, terminal-bench-write-compressor (stall repeats should now produce artifacts); falsifier: terminal-bench-model-extraction-relu-logits pass repeats 0/1 regressing would indicate resume segmentation destroys needed long-reasoning turns"
+        ],
+        "analysis_tags": [
+          "wall-clock-deadline",
+          "stream-salvage",
+          "checkpoint-resume",
+          "length-continuation",
+          "PI_SRC_PROVIDER_RUNTIME",
+          "PI_SRC_AGENT_LOOP",
+          "stall-after-tool-result",
+          "within-task-contrast"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.4888888888888889,
+        "candidate_score": 0.2222222222222222,
+        "delta": -0.26666666666666666,
+        "partial_candidate_score": 0.2222222222222222,
+        "partial_delta": -0.26666666666666666,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-largest-eigenval",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "improved_tasks": [
+          "terminal-bench-headless-terminal"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-largest-eigenval",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-regex-log",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_severe_task_regression",
+        "baseline_score": 0.4888888888888889,
+        "candidate_score": 0.2222222222222222,
+        "delta": -0.26666666666666666,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-largest-eigenval",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "improved_tasks": [
+          "terminal-bench-headless-terminal"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-largest-eigenval",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-regex-log",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "candidate_changed_files": [
+          "packages/agent/src/agent-loop.ts",
+          "packages/ai/src/api/openai-completions.ts"
+        ],
+        "validation_failure": null,
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-terminal-kimi-k3-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260827T043018Z/cells/terminal/kimi-k3/pi/attempts/1/pi-source-evolution/controller/records/round-01"
+    },
+    {
+      "candidate_id": "round-02",
+      "status": "rejected",
+      "reason": "direct_full_training_severe_task_regression",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-02-deadline-aware-pacing",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/agent-loop.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=terminal-bench-build-cython-ext; failure_repeat=1; action=action_41 after ~41 turns launched a 300s pip reinstall at t+861s and was killed during install at t+892s instead of verifying its already-committed fix; verifier=10/11 tests passed, repo test never re-run; pass_repeat=0",
+          "task=terminal-bench-model-extraction-relu-logits; failure_repeat=2; action=action_03 turn-3 generation began at t+655s with zero artifacts persisted and never completed inside the remaining 245s; verifier=0/1 test_stolen_matrix_matches; pass_repeat=0,1",
+          "task=terminal-bench-gcode-to-text; failure_repeat=1; action=turns 10-31 kept re-rendering projection scripts with no clock; out.txt still unwritten at kill t+885s; verifier=test_hello_file_exists: File /app/out.txt does not exist; pass_repeat=none",
+          "task=terminal-bench-cobol-modernization; failure_repeat=1; action=12 turns of probing/compiling probes; required modernized output files never committed by kill t+833s; verifier=test_required_files_exist failed (1/3); pass_repeat=none",
+          "task=terminal-bench-write-compressor; failure_repeat=1; action=after measuring the gzip baseline in turn 2, no compressor artifact was written before the run died; verifier=test_compressed_file_exists failed; pass_repeat=0,2",
+          "aggregate: 18 of 23 failed trajectories end at AgentTimeoutError; 13+ end with deliverable-missing or deliverable-incomplete verifier failures; /app/pi-source-evidence/references/627505108b30be2e-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/1f1861d0eb13382e-evolution-history.json (round-01 rejection)"
+        ],
+        "root_cause": "Runs execute under a hard external wall-clock budget (900s/1800s), but the agent loop exposes no time signal: tool results carry no elapsed clock and no warning is ever injected before late turns. The model therefore paces blind: it keeps exploring/refining past the point where its current-best work should be committed, launch long install/test or fresh giant generations in the final minutes, and the external kill catches it with required deliverables unwritten (objects in context are lost; the verifier only sees the filesystem).",
+        "mechanism": "packages/agent/src/agent-loop.ts gains deadline-aware pacing inside runLoop (the default RSIBench path: pi --print -> AgentSession.prompt -> runAgentLoop -> runLoop): (1) runLoop records runStartedAt and turnCount; every tool-result message gets a compact '[time T+m:ss, turn N]' footer so each turn carries a visible clock; (2) collectDuePacingMessages injects a one-shot synthetic user message (message_start/message_end events, pushed into context like steering messages) when a turn boundary passes elapsed milestones 8/12/14 minutes, with escalating text: save current best deliverables to required paths now -> prefer a complete verified end state over exploration -> assume little time remains, finalize immediately. Both signals are advisory text only; they never truncate, cap, abort, or resume generations. PI_AGENT_PACING=0 disables; PI_AGENT_PACING_MILESTONES_MS overrides milestones (defaults are the default-path behavior, consumed by every run).",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "rollback_and_pivot",
+        "why_this_component": "agent-loop.ts (PI_SRC_AGENT_LOOP) owns turn progression, tool-result handoff, and message injection; its documented concern is exactly turn/stopping behavior, and the failure is that the loop lets the model run blind into the external deadline. The mechanism deliberately avoids the provider-stream layer where round-01's rejected wall-clock cap lived, requires no tool-runtime change, and is on the default path (runLoop is invoked for every print-mode task run), so the added notices and footers have a guaranteed default-path consumer.",
+        "predicted_fixes": [
+          "build-cython-ext r1: the 8:00/12:00 notices fire at turn boundaries (~t+602s and ~t+861s), pushing verification and committed final state before the fatal 300s reinstall - plausible 10/11 -> 11/11 flip",
+          "model-extraction-relu-logits r2: the 8:00 notice lands at the t+655s boundary before the never-completing third generation, urging immediate write of steal.py/stolen_A1.npy - plausible flip; r0/r1 unaffected since they already act incrementally",
+          "gcode-to-text r0/r1/r2 and cobol-modernization r0/r1/r2: repeated clock footers plus 8-14 minute notices convert late exploration turns into committed deliverable writes (out.txt, required program files) instead of dying with nothing - at least one repeat plausibly flips from missing-artifact to passing content",
+          "write-compressor r1 / tune-mjcf r2 / largest-eigenval r0/r1: earlier compression of 'write deliverable + verify' into the turn schedule reduces the chance of the final minutes being spent on uncommitted exploratory turns"
+        ],
+        "regression_risks": [
+          "Long passing runs (>8min: make-mips-interpreter r1 1561s, qemu r0, adaptive-rejection-sampler r2, write-compressor r0) receive the footers and up to 3 notices; text explicitly says continue after checkpointing, but the 14:00 'finalize immediately' notice could induce a premature stop in the 1800s-budget mips pass - falsifier: terminal-bench-make-mips-interpreter pass_repeat=1 must not regress",
+          "Extra context tokens (~10 per tool result, at most 3 notices per run) - negligible vs 50KB outputs, but shifts prompt caches slightly for all runs",
+          "Synthetic user notices appear in transcripts and interactive sessions (self-describing '[automated pacing notice]' text, same channel as steering messages)"
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke",
+          "task-flip watch: terminal-bench-build-cython-ext (r1 should commit/verify earlier), terminal-bench-model-extraction-relu-logits (r2 should write the matrix file; r0/r1 must not regress), terminal-bench-gcode-to-text and terminal-bench-cobol-modernization (at least one repeat writes deliverables before the deadline)",
+          "regression watch: terminal-bench-make-mips-interpreter r1 and terminal-bench-qemu-alpine-ssh (long passes must not be derailed by pacing notices); if mips r1 flips pass->fail the 14:00 milestone is too aggressive for 1800s budgets"
+        ],
+        "analysis_tags": [
+          "deadline-aware-pacing",
+          "wall-clock-visibility",
+          "checkpoint-reminder",
+          "adaptive-stopping",
+          "missing-deliverable",
+          "cross-task-timeout-pattern",
+          "PI_SRC_AGENT_LOOP",
+          "pivot-from-round-01-stream-cap"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.4888888888888889,
+        "candidate_score": 0.17777777777777776,
+        "delta": -0.3111111111111111,
+        "partial_candidate_score": 0.17777777777777776,
+        "partial_delta": -0.3111111111111111,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-regex-log",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "improved_tasks": [
+          "terminal-bench-headless-terminal"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-regex-log",
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_severe_task_regression",
+        "baseline_score": 0.4888888888888889,
+        "candidate_score": 0.17777777777777776,
+        "delta": -0.3111111111111111,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-regex-log",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "improved_tasks": [
+          "terminal-bench-headless-terminal"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-regex-log",
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "candidate_changed_files": [
+          "packages/agent/src/agent-loop.ts"
+        ],
+        "validation_failure": null,
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-terminal-kimi-k3-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260827T043018Z/cells/terminal/kimi-k3/pi/attempts/1/pi-source-evolution/controller/records/round-02"
+    },
+    {
+      "candidate_id": "round-03",
+      "status": "rejected",
+      "reason": "meta_submission_failed",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": true,
+      "manifest": null,
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "partial_candidate_score": null,
+        "partial_delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": [],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-terminal-kimi-k3-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260827T043018Z/cells/terminal/kimi-k3/pi/attempts/1/pi-source-evolution/controller/records/round-03"
+    },
+    {
+      "candidate_id": "round-04",
+      "status": "rejected",
+      "reason": "direct_full_training_severe_task_regression",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-04-incremental-work-prompt-guidance",
+        "layer": "shared_resource",
+        "primary_module": "SHARED_PROMPT",
+        "compound_modules": [],
+        "files": [
+          ".pi/APPEND_SYSTEM.md"
+        ],
+        "requires_rebuild": false,
+        "failure_evidence": [
+          "task=terminal-bench-configure-git-webserver; failure_repeat=0; action=action_30 cleanup `rm -rf /var/www/html/*` and `git update-ref -d refs/heads/master` after the pushed hello.html had been verified via curl, then action_35 declared completion with the webroot emptied; verifier=curl <REDACTED_PRIVATE_ENDPOINT> returned HTTP 404 (reward 0); pass_repeat=1,2 (both left deployed content in place); trajectory=/app/pi-source-evidence/references/866ea1ce2f85adf0-trajectory.jsonl",
+          "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=0; action=action_05 the generation after the Rscript-check tool result at t+97.9s was attempted as one monolithic turn, never completed within the remaining ~800s of the 900s budget, and /app/ars.R was never persisted; verifier=reward 0 (required module missing); pass_repeat=2 (the equivalent monolithic write turn took 662s and finished 120s before the kill); trajectories=/app/pi-source-evidence/references/13a4d2940be6982b-trajectory.jsonl (fail) vs /app/pi-source-evidence/references/8c982212f5784400-trajectory.jsonl (pass)",
+          "task=terminal-bench-write-compressor; failure_repeat=1; action=turn 2 was a single 305s/15114-token generation and the following monolithic design generation never completed before the 900s kill, leaving no compressor artifact on disk; verifier=compressed-file check failed (reward 0); pass_repeat=0,2; trajectory=/app/pi-source-evidence/references/9f2187481fbd762d-trajectory.jsonl",
+          "aggregate: 18 of 23 failed trajectories end at AgentTimeoutError with deliverables unwritten or incomplete (headless-terminal r0, tune-mjcf r1/r2, model-extraction-relu-logits r2, gcode-to-text r0-r2, cobol-modernization r0-r2, build-cython-ext r1/r2, largest-eigenval r0/r1, make-mips-interpreter r0/r2); evolution-history round-01 (stream wall-clock cap plus resume, 0.489->0.222) and round-02 (injected pacing footers/notices, 0.489->0.178) were both performance-rejected: /app/pi-source-evidence/references/6a634ef8a33cdf4d-evolution-history.json, /app/pi-source-evidence/references/21ecfe84bcdd3684-training-opportunity-index.json, /app/pi-source-evidence/references/c151c3a83873ceac-training-failures.json"
+        ],
+        "root_cause": "The task agent lacks durable working discipline under a hard wall-clock budget: it (a) attempts solutions as single monolithic generations whose entire streamed output is lost when the external deadline kills the run mid-generation, (b) iterates without persisting required deliverables to their target paths, and (c) treats verified output artifacts as disposable test data during cleanup (configure-git-webserver r0 deleted the deployed hello.html it had just verified, causing the verifier's 404). These are absent general strategies, not broken runtime execution; the two source-level mechanisms previously tried against the same timeout pattern were measured as catastrophic regressions.",
+        "mechanism": "Extend .pi/APPEND_SYSTEM.md (SHARED_PROMPT, appended to the system prompt on the default Pi task-agent execution path; the original guidance text is preserved verbatim) with four concise task-agnostic working-discipline bullets: (1) work incrementally in short tool-called steps instead of one long monolithic reply, building large files from smaller verifiable pieces, so no single generation can consume the whole budget; (2) persist deliverables to their required paths as soon as a working version exists and iterate on them in place, since the final filesystem state is what gets verified; (3) before ending, re-check the exact output contract in the task statement (paths, formats, units, expected values) and run the evaluation or test the task provides; (4) when end-to-end testing or cleanup replaced required artifacts, restore the required final state and leave verified deliverables in place. Being static system-prompt text, it injects no mid-run messages and changes no stream, tool-result, or provider behavior for running sessions.",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "rollback_and_pivot",
+        "why_this_component": "SHARED_PROMPT (.pi/APPEND_SYSTEM.md) is the shared resource carrying global strategy guidance loaded on every default-path Pi task run (the .pi workspace is verifiably active in the training trajectories, e.g. the verify-work skill is read by agents). The causal defect is genuinely missing general task guidance/habits, which is exactly SHARED_PROMPT's documented scope, and the layer is not mixed: the change set touches only shared resources, no Source-12 files. Both plausible Source-12 alternatives were already falsified by measurement (round-01 provider-stream cap and round-02 runtime message injection each dropped the training mean by roughly 0.27-0.31 by disrupting currently-passing runs), leaving static prompt guidance as the only layer-consistent causal lever.",
+        "predicted_fixes": [
+          "Stall repeats now commit artifacts before the kill: terminal-bench-adaptive-rejection-sampler r0/r1, terminal-bench-headless-terminal r0, terminal-bench-tune-mjcf r1, terminal-bench-write-compressor r1, terminal-bench-model-extraction-relu-logits r2 become plausible fail-to-pass flips because work splits into incremental tool-called steps with files written early instead of one budget-filling generation",
+          "terminal-bench-configure-git-webserver r0: the restore-final-state and output-contract guidance prevents deleting the deployed hello.html after end-to-end testing, so the verifier's curl returns 200 instead of 404",
+          "Budget-burning repeats (terminal-bench-gcode-to-text r0-r2, terminal-bench-cobol-modernization r0-r2, terminal-bench-build-cython-ext r1/r2, terminal-bench-largest-eigenval r0/r1, terminal-bench-tune-mjcf r2, terminal-bench-make-mips-interpreter r0/r2) reach the deadline with valid committed deliverables instead of empty or incomplete state"
+        ],
+        "regression_risks": [
+          "Every run receives roughly 120 extra words of system prompt, which may slightly shift model behavior or prompt-cache locality on currently-passing tasks; regression watch: terminal-bench-sanitize-git-repo, terminal-bench-regex-log, terminal-bench-qemu-alpine-ssh, terminal-bench-model-extraction-relu-logits r0/r1, terminal-bench-configure-git-webserver r1/r2 must stay green",
+          "Persist-early guidance can add a few extra tool calls per run, costing wall-clock time on tasks that already passed near the budget edge",
+          "Guidance alone may not make the hardest budget-bound tasks (gcode-to-text, cobol-modernization) converge, so they may remain 0/3 without offsetting the gains elsewhere"
+        ],
+        "targeted_checks": [
+          "resource-preflight",
+          "prompt-load-smoke",
+          "task-flip watch: terminal-bench-adaptive-rejection-sampler, terminal-bench-headless-terminal, terminal-bench-write-compressor, terminal-bench-tune-mjcf, terminal-bench-model-extraction-relu-logits failing repeats should produce their required artifact files before the 900s kill; falsifier: they still die with zero deliverables on disk",
+          "task-flip watch: terminal-bench-configure-git-webserver r0 verifier curl of /hello.html should return 200; falsifier: still 404 after cleanup",
+          "regression watch: always-passing terminal-bench-sanitize-git-repo, terminal-bench-regex-log, terminal-bench-qemu-alpine-ssh must not regress, which would indicate the added prompt text derails normal runs the way round-02's injected messages did"
+        ],
+        "analysis_tags": [
+          "shared-prompt",
+          "working-discipline",
+          "incremental-actions",
+          "persist-deliverables-early",
+          "monolithic-generation-timeout",
+          "destructive-cleanup",
+          "restore-final-state",
+          "cross-task-pattern",
+          "SHARED_PROMPT",
+          "pivot-from-rejected-runtime-mechanisms"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.4888888888888889,
+        "candidate_score": 0.24444444444444444,
+        "delta": -0.24444444444444444,
+        "partial_candidate_score": 0.24444444444444444,
+        "partial_delta": -0.24444444444444444,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "improved_tasks": [
+          "terminal-bench-headless-terminal"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-configure-git-webserver",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_severe_task_regression",
+        "baseline_score": 0.4888888888888889,
+        "candidate_score": 0.24444444444444444,
+        "delta": -0.24444444444444444,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "improved_tasks": [
+          "terminal-bench-headless-terminal"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-configure-git-webserver",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-tune-mjcf",
+          "terminal-bench-write-compressor"
+        ],
+        "candidate_changed_files": [
+          ".pi/APPEND_SYSTEM.md"
+        ],
+        "validation_failure": null,
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-terminal-kimi-k3-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260827T043018Z/cells/terminal/kimi-k3/pi/attempts/1/pi-source-evolution/controller/records/round-04"
+    },
+    {
+      "candidate_id": "round-05",
+      "status": "editing",
+      "reason": "",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": null,
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "partial_candidate_score": null,
+        "partial_delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": [],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-terminal-kimi-k3-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260827T043018Z/cells/terminal/kimi-k3/pi/attempts/1/pi-source-evolution/controller/records/round-05"
+    },
+    {
+      "candidate_id": "meta-agent-smoke",
+      "status": "rejected",
+      "reason": "qualification_passed",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "meta-agent-smoke-qualification-edit-1",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/stream-fn.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "controller qualification: prove edit, protocol, build, and smoke; qualification_task.required_edit=insert exactly one harmless source comment as the first line of packages/agent/src/stream-fn.ts"
+        ],
+        "root_cause": "Smoke qualification round: the staged counterfactual findings artifact is empty and there is no training-task failure evidence to act on; the only controller-directed action is to prove the recursive edit, build, and smoke path by inserting one harmless comment line at the top of packages/agent/src/stream-fn.ts. No runtime defect exists or is claimed.",
+        "mechanism": "Insert the exact required line '// RSIBench meta-agent smoke qualification edit. Do not change runtime behavior.' as the first line of packages/agent/src/stream-fn.ts (PI_SRC_AGENT_LOOP). A TypeScript line comment preceding the imports is erased at compile time and cannot alter parsing, exports, or runtime behavior; the edit exercises the candidate diff, clean build, and CLI smoke pipeline without touching any executable code path.",
+        "evidence_basis": "runtime_failure",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The qualification task designates packages/agent/src/stream-fn.ts in module PI_SRC_AGENT_LOOP as the required file; it is an owned, non-frozen path in the module catalog and the only file named by the controller's required_edit, making it the correct and sufficient location to prove the edit/build/smoke path.",
+        "predicted_fixes": [
+          "Candidate worktree contains a real cumulative Git diff against accepted_commit consisting solely of the one-line comment addition",
+          "Frozen candidate checker passes npm-ci-offline, build-offline, and pi-cli-smoke with zero diagnostics"
+        ],
+        "regression_risks": [
+          "None: the diff is a single TypeScript comment line with no effect on compiled output or runtime behavior"
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke"
+        ],
+        "analysis_tags": [
+          "qualification",
+          "smoke",
+          "comment-only-edit",
+          "PI_SRC_AGENT_LOOP"
+        ]
+      },
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "partial_candidate_score": null,
+        "partial_delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": [],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-terminal-kimi-k3-meta-same-pi-skyinfer-32w-full-18-direct-g5-tr3-te3-20260827T043018Z/cells/terminal/kimi-k3/pi/attempts/1/pi-source-evolution/controller/records/meta-agent-smoke"
+    }
+  ],
+  "active_attempts_since_last_accept": [
+    "round-01",
+    "round-02",
+    "round-03",
+    "round-04",
+    "round-05",
+    "meta-agent-smoke"
+  ],
+  "prompt_policy": {
+    "performance_attempts": 1,
+    "performance_rejections": 1,
+    "blocked_after_no_lift": true,
+    "rejected_change_ids": [
+      "round-04-incremental-work-prompt-guidance"
+    ],
+    "required_action": "choose_a_non_prompt_physical_module"
+  }
+}

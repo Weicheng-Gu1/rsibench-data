@@ -1,0 +1,163 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 3a12506..a6ba145 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -149,6 +149,113 @@ function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
+ 	);
+ }
+ 
++// ============================================================================
++// Deadline-aware pacing
++// ============================================================================
++
++/**
++ * Wall-clock pacing for long agent runs.
++ *
++ * Agent loops run under an external wall-clock budget with no built-in notion
++ * of elapsed time: the model cannot see a clock, so it may keep exploring or
++ * refining until the external deadline kills the run with deliverables still
++ * unwritten. Two cheap, additive signals address this:
++ *
++ * 1. Every tool-result message gets a compact elapsed-time footer, so each
++ *    turn carries an implicit clock the model can pace itself against.
++ * 2. At fixed elapsed milestones a synthetic user message urges the model to
++ *    checkpoint its current best deliverables (write them to their required
++ *    paths), verify, and only then continue - escalating as time grows.
++ *
++ * Both signals are advisory text only: they never truncate, abort, or resume
++ * generations, so long-but-productive turns are unaffected. Set
++ * PI_AGENT_PACING=0 (or "off"/"false") to disable the mechanism entirely,
++ * and PI_AGENT_PACING_MILESTONES_MS="480000,720000,840000" to override the
++ * milestone times (elapsed milliseconds, comma-separated).
++ */
++const DEFAULT_PACING_MILESTONES_MS = [8 * 60_000, 12 * 60_000, 14 * 60_000];
++
++function pacingEnabled(): boolean {
++	const raw = process.env.PI_AGENT_PACING;
++	if (raw === undefined) return true;
++	const normalized = raw.trim().toLowerCase();
++	return normalized !== "0" && normalized !== "off" && normalized !== "false" && normalized !== "no";
++}
++
++function resolvePacingMilestonesMs(): number[] {
++	const raw = process.env.PI_AGENT_PACING_MILESTONES_MS;
++	if (!raw) return DEFAULT_PACING_MILESTONES_MS;
++	const parsed = raw
++		.split(",")
++		.map((part) => Number(part.trim()))
++		.filter((ms) => Number.isFinite(ms) && ms > 0)
++		.sort((a, b) => a - b);
++	return parsed.length > 0 ? parsed : DEFAULT_PACING_MILESTONES_MS;
++}
++
++function formatElapsed(elapsedMs: number): string {
++	const totalSeconds = Math.floor(elapsedMs / 1000);
++	const minutes = Math.floor(totalSeconds / 60);
++	const seconds = totalSeconds % 60;
++	return `${minutes}:${String(seconds).padStart(2, "0")}`;
++}
++
++function pacingMessageText(milestoneIndex: number, elapsedMs: number): string {
++	const elapsed = formatElapsed(elapsedMs);
++	switch (milestoneIndex) {
++		case 0:
++			return (
++				`[automated pacing notice] ${elapsed} of wall-clock time have elapsed in this run. ` +
++				"If your task has a fixed time limit (many automated evaluation environments do), " +
++				"save your current best deliverables to their required paths now, then continue improving them."
++			);
++		case 1:
++			return (
++				`[automated pacing notice] ${elapsed} elapsed. Prefer a complete, verified end state over further ` +
++				"exploration: commit your current best deliverables, quickly check them against the task " +
++				"statement, and fix any gaps before continuing."
++			);
++		default:
++			return (
++				`[automated pacing notice] ${elapsed} elapsed - assume very little time remains. Finalize ` +
++				"immediately: write your best current answer to every file or end state the task requires, " +
++				"then stop exploring."
++			);
++	}
++}
++
++/**
++ * Collect pacing user messages for milestones that have elapsed since
++ * `runStartedAt` and have not fired yet. Messages are emitted at most once per
++ * milestone per run-loop invocation.
++ */
++function collectDuePacingMessages(runStartedAt: number, firedMilestones: Set<number>): AgentMessage[] {
++	if (!pacingEnabled()) return [];
++	const elapsedMs = Date.now() - runStartedAt;
++	const milestones = resolvePacingMilestonesMs();
++	const messages: AgentMessage[] = [];
++	for (let i = 0; i < milestones.length; i++) {
++		const milestone = milestones[i]!;
++		if (firedMilestones.has(milestone) || elapsedMs < milestone) continue;
++		firedMilestones.add(milestone);
++		messages.push({
++			role: "user",
++			content: [{ type: "text", text: pacingMessageText(i, elapsedMs) }],
++			timestamp: Date.now(),
++		});
++	}
++	return messages;
++}
++
++/** Append a compact elapsed-time footer to each tool result so the model can pace future turns. */
++function annotateToolResultsWithClock(toolResults: ToolResultMessage[], runStartedAt: number, turn: number): void {
++	if (!pacingEnabled()) return;
++	const tag = `[time T+${formatElapsed(Date.now() - runStartedAt)}, turn ${turn}]`;
++	for (const result of toolResults) {
++		result.content = [...(result.content ?? []), { type: "text", text: tag }];
++	}
++}
++
+ /**
+  * Main loop logic shared by agentLoop and agentLoopContinue.
+  */
+@@ -163,8 +270,14 @@ async function runLoop(
+ 	let currentContext = initialContext;
+ 	let config = initialConfig;
+ 	let firstTurn = true;
+-	// Check for steering messages at start (user may have typed while waiting)
+-	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
++	const runStartedAt = Date.now();
++	const firedPacingMilestones = new Set<number>();
++	let turnCount = 0;
++	// Check for pacing notices and steering messages at start (user may have typed while waiting)
++	let pendingMessages: AgentMessage[] = [
++		...collectDuePacingMessages(runStartedAt, firedPacingMilestones),
++		...((await config.getSteeringMessages?.()) || []),
++	];
+ 
+ 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
+ 	while (true) {
+@@ -192,6 +305,7 @@ async function runLoop(
+ 			// Stream assistant response
+ 			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
+ 			newMessages.push(message);
++			turnCount += 1;
+ 
+ 			if (message.stopReason === "error" || message.stopReason === "aborted") {
+ 				await emit({ type: "turn_end", message, toolResults: [] });
+@@ -215,6 +329,7 @@ async function runLoop(
+ 				toolResults.push(...executedToolBatch.messages);
+ 				hasMoreToolCalls = !executedToolBatch.terminate;
+ 
++				annotateToolResultsWithClock(toolResults, runStartedAt, turnCount);
+ 				for (const result of toolResults) {
+ 					currentContext.messages.push(result);
+ 					newMessages.push(result);
+@@ -256,7 +371,10 @@ async function runLoop(
+ 				return;
+ 			}
+ 
+-			pendingMessages = (await config.getSteeringMessages?.()) || [];
++			pendingMessages = [
++				...collectDuePacingMessages(runStartedAt, firedPacingMilestones),
++				...((await config.getSteeringMessages?.()) || []),
++			];
+ 		}
+ 
+ 		// Agent would stop here. Check for follow-up messages.

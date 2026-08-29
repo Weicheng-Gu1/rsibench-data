@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Trajectories show a distinct, repeated failure class: after a tool result, a single assistant generation runs for the entire remaining wall-clock budget (up to ~870s of a 900s cap) and never completes, so no message is persisted and no artifact is written (headless-terminal repeat 0, adaptive-rejection-sampler repeats 0/1, tune-mjcf repeat 1, write-compressor repeat 1; same-task passing repeats finish such turns in ~300-640s and act incrementally). The existing 300s idle watchdog only catches dead streams, not live overlong ones, and the agent loop treats a truncated response with no tool calls as run end. The cumulative worktree contains the verified change (git diff confirms both files): (1) a per-response wall-clock deadline in the openai-completions stream that aborts an overlong live response and salvages its partial content as a length-truncated message, and (2) a bounded checkpoint-resume in the agent loop that injects a continuation request on bare length turns instead of ending the run. Verified by the frozen candidate checker (npm-ci-offline, build-offline, pi-cli-smoke all passed), unchanged existing agent/ai test suites (only pre-existing baseline failures), and ad-hoc behavioral tests (since removed) proving salvage-as-length with preserved content, capped resume, and untouched normal stops.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "round-01-wallclock-checkpoint-resume",
+    "failure_evidence": [
+      "task=terminal-bench-headless-terminal; failure_repeat=0; action=action_04 assistant generation after tool results at t+30.6s never completed in the remaining ~869s (zero further session events, no /app/headless_terminal.py); verifier=ModuleNotFoundError: headless_terminal, 0/7 tests passed; pass_repeat=1 (/app/pi-source-evidence/references/990819ef9670b7f8-trajectory.jsonl completed in 15 turns/559s)",
+      "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=0; action=action_05 generation after Rscript install tool result at t+97.9s consumed the remaining ~800s without completing; verifier=reward 0 (no /app/ars.R written); pass_repeat=2 (/app/pi-source-evidence/references/8c982212f5784400-trajectory.jsonl)",
+      "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=1; action=action_06 generation after R-version tool result at t+214.9s never completed; verifier=reward 0; pass_repeat=2",
+      "task=terminal-bench-tune-mjcf; failure_repeat=1; action=action_02 generation after initial exploration tool results at t+3.6s never completed; verifier=AssertionError 'Tuned model file does not exist' (/app/model.xml missing); pass_repeat=0",
+      "task=terminal-bench-write-compressor; failure_repeat=1; action=action_03 second assistant turn already took ~310s wall for 15k output tokens, third generation never completed in remaining budget; verifier=reward 0; pass_repeat=0,2 (passing turns act in bounded increments)",
+      "task=terminal-bench-model-extraction-relu-logits; failure_repeat=2; action=action_01 first turn alone streamed ~642s (15577 reasoning tokens) leaving ~245s, third generation unfinished at cap; verifier=reward 0; pass_repeat=0,1 (pass_repeat=0 shows one ~635s single turn can legitimately nearly exhaust a 900s budget)",
+      "/app/pi-source-evidence/references/a09f283b6fc05ec6-training-opportunity-index.json",
+      "/app/pi-source-evidence/references/352d5f6c370da66a-training-failures.json"
+    ],
+    "root_cause": "A single provider response has no wall-clock bound. With kimi-k3 via the OpenAI-completions stream, one turn can legitimately stream >600s of output (15k+ reasoning tokens); when such a turn's generation exceeds the remaining task budget (or stalls into it), the existing 300s idle watchdog never fires because chunks keep arriving, nothing is persisted, and the external 900s kill discards the entire pending generation — the run produces zero artifacts. Separately, when a response is truncated (token limit / salvage), the agent loop ends the run if the truncated message contains no tool calls, so partial progress is abandoned unacknowledged.",
+    "mechanism": "packages/ai/src/api/openai-completions.ts: add a one-shot per-response wall-clock deadline (default 300s, PI_STREAM_MAX_DURATION_MS override, 0 disables) combined into the request abort signal; when it fires mid-stream, the catch finalizes all already-streamed blocks (best-effort tool-call argument salvage) as stopReason 'length' with a descriptive errorMessage and pushes done — instead of an error that discards the partial output. packages/agent/src/agent-loop.ts: when a streamed assistant message ends bare stopReason 'length' with no tool calls, the loop emits turn_end, injects a continuation user message ('resume with concrete tool calls now, in smaller increments') as a pending steering message, and starts a new turn, up to 5 consecutive resumes; the counter resets on normal or tool-calling turns. Net effect: overlong generations are checkpointed and resumed with content preserved; the model acts incrementally instead of the run ending mid-task or the response vanishing.",
+    "evidence_basis": "within_task_contrast",
+    "prior_attempt_disposition": "new_direction",
+    "why_this_component": "The wire-level overlong-stream bound belongs to PI_SRC_PROVIDER_RUNTIME (openai-completions.ts is the exact api path used by every failed trajectory: api=openai-completions; the file already owns the analogous idle watchdog); the stop/progression decision on truncated turns is exactly PI_SRC_AGENT_LOOP's documented concern ('the agent stops before acting when it shouldn't'). Both are on the default RSIBench path: streamAssistantResponse consumes the 'length' done event, and runLoop emits the resume — no new API without a default-path consumer.",
+    "predicted_fixes": [
+      "Stall-class failures (headless-terminal repeat 0, adaptive-rejection-sampler repeats 0/1, tune-mjcf repeat 1, write-compressor repeat 1) checkpoint at 300s per response, persist partial reasoning, and continue acting via tool calls within the 900s budget — expected fail-to-pass flips",
+      "Length-truncated bare turns (token limit) no longer silently end runs; the model resumes from preserved content",
+      "Multi-hundred-second single turns in otherwise slow runs (model-extraction, largest-eigenval, cobol-modernization, gcode-to-text) become bounded checkpointed segments with preserved context, reducing total-loss risk at the external deadline"
+    ],
+    "regression_risks": [
+      "Legitimate one-shot ~640s turns (e.g. model-extraction pass repeat 0) become 2-3 resumed segments: same total generation time plus re-prefill overhead per segment (mitigated by prompt-cache reads); content is preserved in context so the reasoning continues",
+      "A pathological provider that truncates every response burns up to 5 resume segments (capped) before the run ends as before",
+      "Synthetic continuation user messages appear in session history (transparent, self-describing text); interactive flows see the same benign steering-style message"
+    ],
+    "targeted_checks": [
+      "provider-stream",
+      "agent-loop",
+      "tool-call-parsing",
+      "task-flip watch: terminal-bench-headless-terminal, terminal-bench-adaptive-rejection-sampler, terminal-bench-tune-mjcf, terminal-bench-write-compressor (stall repeats should now produce artifacts); falsifier: terminal-bench-model-extraction-relu-logits pass repeats 0/1 regressing would indicate resume segmentation destroys needed long-reasoning turns"
+    ],
+    "analysis_tags": [
+      "wall-clock-deadline",
+      "stream-salvage",
+      "checkpoint-resume",
+      "length-continuation",
+      "PI_SRC_PROVIDER_RUNTIME",
+      "PI_SRC_AGENT_LOOP",
+      "stall-after-tool-result",
+      "within-task-contrast"
+    ]
+  }
+}
