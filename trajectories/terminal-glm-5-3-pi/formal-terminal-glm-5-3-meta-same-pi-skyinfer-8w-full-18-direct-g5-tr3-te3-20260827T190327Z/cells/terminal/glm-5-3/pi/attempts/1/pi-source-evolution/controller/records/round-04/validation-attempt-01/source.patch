@@ -1,0 +1,125 @@
+diff --git a/packages/coding-agent/src/core/tools/bash.ts b/packages/coding-agent/src/core/tools/bash.ts
+index 1c245cb..9a0d25b 100644
+--- a/packages/coding-agent/src/core/tools/bash.ts
++++ b/packages/coding-agent/src/core/tools/bash.ts
+@@ -199,6 +199,49 @@ export interface BashToolOptions {
+ const BASH_PREVIEW_LINES = 5;
+ const BASH_UPDATE_THROTTLE_MS = 100;
+ 
++/**
++ * Wall-clock telemetry for model-visible bash observations.
++ *
++ * Pi renders command duration only in the TUI; the tool result the model
++ * receives carries no time information at all. In long autonomous runs the
++ * model therefore cannot pace itself: a 300s command looks like a 2s one, and
++ * runs keep launching open-ended exploration while the requested deliverable
++ * is unwritten or stale, until an external harness timeout kills the session
++ * (observed repeatedly on long-budget benchmark tasks where a verified
++ * solution was in hand but never persisted).
++ *
++ * Every completed bash observation (success, non-zero exit, timeout, abort)
++ * gains a footer with the command duration and the session elapsed time. The
++ * session start is decoded from the UUIDv7 session id (first 48 bits are the
++ * unix millisecond timestamp). Once the session has run for a long time, a
++ * short one-line advisory is appended (bounded number of times) recommending
++ * that the best current version of any requested deliverable be saved on disk
++ * now; it is explicitly non-terminal so healthy long runs are not derailed.
++ */
++const SESSION_ELAPSED_ADVISORY_THRESHOLD_MS = 600_000;
++const SESSION_ELAPSED_ADVISORY_MAX_NOTES = 3;
++
++const sessionElapsedAdvisoryNotes = new Map<string, number>();
++
++function sessionStartMsFromSessionId(sessionId: string | undefined): number | undefined {
++	if (!sessionId) return undefined;
++	const hex = sessionId.replace(/-/g, "");
++	if (!/^[0-9a-fA-F]{12}/.test(hex)) return undefined;
++	const ms = Number.parseInt(hex.slice(0, 12), 16);
++	return Number.isFinite(ms) && ms > 0 ? ms : undefined;
++}
++
++function sessionElapsedAdvisoryThresholdMs(): number {
++	const raw = process.env.PI_SESSION_TIME_BUDGET_SECONDS;
++	if (raw) {
++		const budget = Number(raw);
++		if (Number.isFinite(budget) && budget > 0) {
++			return Math.max(1, Math.floor(budget * 1000 * 0.75));
++		}
++	}
++	return SESSION_ELAPSED_ADVISORY_THRESHOLD_MS;
++}
++
+ type BashRenderState = {
+ 	startedAt: number | undefined;
+ 	endedAt: number | undefined;
+@@ -339,6 +382,34 @@ export function createBashToolDefinition(
+ 		) {
+ 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
+ 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx);
++			const startedAtMs = Date.now();
++			const sessionId = ctx?.sessionManager?.getSessionId();
++			const sessionStartMs = sessionStartMsFromSessionId(sessionId);
++
++			const buildTimeTelemetry = (): string => {
++				const completedAtMs = Date.now();
++				const durationSec = (completedAtMs - startedAtMs) / 1000;
++				const elapsedSec =
++					sessionStartMs !== undefined ? Math.floor((completedAtMs - sessionStartMs) / 1000) : undefined;
++				let footer = `[bash completed in ${durationSec.toFixed(1)}s`;
++				if (elapsedSec !== undefined && elapsedSec >= 0) {
++					footer += ` | session elapsed: ${elapsedSec}s`;
++				}
++				footer += "]";
++				if (
++					sessionId === undefined ||
++					elapsedSec === undefined ||
++					elapsedSec < 0 ||
++					elapsedSec * 1000 < sessionElapsedAdvisoryThresholdMs()
++				) {
++					return footer;
++				}
++				const shown = sessionElapsedAdvisoryNotes.get(sessionId) ?? 0;
++				if (shown >= SESSION_ELAPSED_ADVISORY_MAX_NOTES) return footer;
++				if (sessionElapsedAdvisoryNotes.size > 256) sessionElapsedAdvisoryNotes.clear();
++				sessionElapsedAdvisoryNotes.set(sessionId, shown + 1);
++				return `${footer}\n[time check: ${elapsedSec}s of session elapsed] If any requested deliverable is not saved on disk yet, write the best current working version to its requested location and format now, and keep it updated as you improve it; you can continue working afterward. Otherwise continue as planned.`;
++			};
+ 			const output = new OutputAccumulator({ tempFilePrefix: "pi-bash" });
+ 			let acceptingOutput = true;
+ 			let updateTimer: NodeJS.Timeout | undefined;
+@@ -437,11 +508,16 @@ export function createBashToolDefinition(
+ 					const snapshot = await finishOutput();
+ 					const { text } = formatOutput(snapshot, "");
+ 					if (err instanceof Error && err.message === "aborted") {
+-						throw new Error(appendStatus(text, "Command aborted"));
++						throw new Error(appendStatus(appendStatus(text, "Command aborted"), buildTimeTelemetry()));
+ 					}
+ 					if (err instanceof Error && err.message.startsWith("timeout:")) {
+ 						const timeoutSecs = err.message.split(":")[1];
+-						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`));
++						throw new Error(
++							appendStatus(
++								appendStatus(text, `Command timed out after ${timeoutSecs} seconds`),
++								buildTimeTelemetry(),
++							),
++						);
+ 					}
+ 					throw err;
+ 				}
+@@ -449,9 +525,14 @@ export function createBashToolDefinition(
+ 				const snapshot = await finishOutput();
+ 				const { text: outputText, details } = formatOutput(snapshot);
+ 				if (exitCode !== 0 && exitCode !== null) {
+-					throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
++					throw new Error(
++						appendStatus(appendStatus(outputText, `Command exited with code ${exitCode}`), buildTimeTelemetry()),
++					);
+ 				}
+-				return { content: [{ type: "text", text: outputText }], details };
++				return {
++					content: [{ type: "text", text: appendStatus(outputText, buildTimeTelemetry()) }],
++					details,
++				};
+ 			} finally {
+ 				clearUpdateTimer();
+ 			}

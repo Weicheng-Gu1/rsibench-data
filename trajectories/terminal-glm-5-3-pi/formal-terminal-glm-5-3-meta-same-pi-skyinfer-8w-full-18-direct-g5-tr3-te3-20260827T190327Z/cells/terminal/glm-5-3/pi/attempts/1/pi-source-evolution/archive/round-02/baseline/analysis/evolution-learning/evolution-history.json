@@ -1,0 +1,195 @@
+{
+  "schema_version": 2,
+  "purpose": "Falsifiable cross-round memory without controller-defined semantic mechanism classes. The Meta-agent owns causal interpretation.",
+  "attempts": [
+    {
+      "candidate_id": "round-01",
+      "status": "rejected",
+      "reason": "direct_full_training_severe_task_regression",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-01-bash-time-telemetry",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_TOOL_RUNTIME",
+        "compound_modules": [],
+        "files": [
+          "packages/coding-agent/src/core/tools/bash.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=terminal-bench-tune-mjcf; failure_repeat=2; action=action_18/25/30 (wrote known-broken timestep=0.004 model.xml at 187s, saw it FAIL accuracy at 222s, proved the winning PGS config at 676s, then launched another 900s variant sweep at 858s instead of persisting the good config); verifier=test_correctness failed on stale model.xml with state diff 0.0028 after 900s agent timeout; pass_repeat=0 (persisted model.xml at 605s) and 1 (at 395s)",
+          "task=terminal-bench-raman-fitting; failure_repeat=1; action=actions from 468s-889s (correct Raman-space fits in hand — G x0≈1580.5, 2D x0≈2670.3 vs expected 1580.3/2670.08 — but kept refining background models and never wrote /app/results.json); verifier=results.json absent after 900s agent timeout, 0/3 tests; pass_repeat=none (repeat_0 wrote results.json at 518s but with wrong units)",
+          "/app/pi-source-evidence/references/32b7cfcc4c5e8cee-trajectory.jsonl",
+          "/app/pi-source-evidence/references/931f4ca4ac22609c-trajectory.jsonl",
+          "/app/pi-source-evidence/references/c51959fa5d2ffe67-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/c25e636ca406ed65-training-failures.json",
+          "/app/pi-source-evidence/references/6de36c31fcc8cf86-trajectory.jsonl",
+          "/app/pi-source-evidence/references/ae8d09f7ec0acbfd-trajectory.jsonl"
+        ],
+        "root_cause": "The bash observation stream hides wall-clock cost entirely: Pi renders per-command duration only in the TUI, and the model-visible tool result contains neither command duration nor session elapsed time. In long autonomous runs the model cannot pace itself — it treats a 150-300s command like a 2s one and keeps launching open-ended exploration sweeps while the requested deliverable is stale or unwritten, until the external 900s harness timeout kills the run. In tune-mjcf repeat_02 this left the known-broken timestep variant in /app/model.xml for 713s while the winning PGS configuration sat in /tmp; in raman-fitting repeat_01 it left /app/results.json unwritten despite correct fitted values. The same-task passing repeats differ precisely in persisting a working deliverable well before the budget ran out (605s and 395s), a decision the failing repeat could not make informedly with no clock.",
+        "mechanism": "packages/coding-agent/src/core/tools/bash.ts now appends a time-telemetry footer to every completed bash observation on the default task-agent path: `[bash completed in <duration>s; session elapsed: <N>s]`, with session start decoded from the first 48 bits of the UUIDv7 session id via ctx.sessionManager.getSessionId(). After 10 minutes elapsed (or after 75% of an optional integer PI_SESSION_TIME_BUDGET_SECONDS env budget) the footer escalates to a non-terminal advisory: make sure the best current solution is saved on disk right now, keep it updated, prefer short incremental steps over long open-ended exploration, and do not leave the deliverable in a broken or experimental state. The footer is part of the stored toolResult message, so provider prompt-cache prefixes remain stable. Timeout, abort, and non-zero-exit error results carry the same footer, so the most expensive commands always report their cost.",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "PI_SRC_TOOL_RUNTIME owns bash result construction, the exact layer that currently drops the time dimension from model-visible observations. The bash tool is on the default RSIBench execution path (sdk.ts createCodingTools -> createBashTool; AgentSession wrapRegisteredTools -> wrapToolDefinition with the ExtensionContext factory, so ctx.sessionManager reaches execute on every run), and every failing trajectory is bash-heavy in its final phase. A shared-prompt alternative was considered and rejected: static guidance cannot fire at the right moment, and the failing agents already knew they should produce the deliverable — what they lacked was the runtime signal that time was running out while a good solution was in hand.",
+        "predicted_fixes": [
+          "terminal-bench-tune-mjcf repeat_02 flips to pass: at the 676s or 845s bash completion the advisory makes persisting the already-proven PGS configuration to /app/model.xml the next action instead of another 900s sweep; test_correctness then passes (same config family as passing repeats 0/1)",
+          "terminal-bench-raman-fitting repeat_1 improves: advisory at 660-805s prompts writing /app/results.json with the already-correct G/2D fits before timeout (plausible full pass; at minimum the task gains a scoring artifact where none existed)",
+          "possible assists on terminal-bench-largest-eigenval repeats 0/1, model-extraction-relu-logitis repeat_2, and adaptive-rejection-sampler repeat_1 (8/9 at timeout): elapsed-time visibility redirects late effort from open-ended polishing toward validating and finalizing the on-disk artifact",
+          "no change expected for tasks that finish early or already persist artifacts (regex-log, build-cython-ext, qemu-alpine-ssh, headless-terminal, write-compressor, sanitize-git repeats 0/1)"
+        ],
+        "regression_risks": [
+          "Advisory fires at 600s on larger-budget tasks (make-mips runs 1800s), possibly reducing exploration depth mid-task; mitigated by non-terminal phrasing (persist and continue incrementally, not stop), and mips passes completed by ~1700s with artifacts already on disk",
+          "Model may occasionally spend a turn acknowledging the note; cost is a few tens of tokens per bash result",
+          "If a session id is not UUIDv7 the note degrades to duration-only (no pacing signal, no regression)",
+          "Overeager early wrap-up on a currently-passing long task would surface as a pass-to-fail on cobol-modernization repeat_2 or make-mips repeats 0/1 in the next validation run"
+        ],
+        "targeted_checks": [
+          "tune-mjcf repeat_02 rerun with the candidate: the trajectory must show /app/model.xml updated to a passing configuration before session end and the verifier passing test_correctness; a stale timestep-variant model.xml at timeout falsifies the mechanism",
+          "raman-fitting repeat_01 rerun: /app/results.json must exist at timeout with Raman-space values (x0 near 1580.3/2670.08); absence falsifies the mechanism",
+          "pass-to-fail watch on cobol-modernization repeat_2 and make-mips repeats 0/1 to bound the premature-wrap-up risk",
+          "functional path check (already run in-sandbox): plain footer under 600s, advisory after 600s, budget-relative advisory with PI_SESSION_TIME_BUDGET_SECONDS=900 at 760s elapsed, and footer presence on exit-code/timeout error paths"
+        ],
+        "analysis_tags": [
+          "deadline-aware-observation",
+          "time-telemetry",
+          "adaptive-persistence",
+          "timeout-cluster",
+          "PI_SRC_TOOL_RUNTIME",
+          "bash-observation-fidelity",
+          "uuidv7-session-clock",
+          "within_task_contrast",
+          "cross_task_pattern"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.6222222222222222,
+        "candidate_score": 0.6666666666666666,
+        "delta": 0.0444444444444444,
+        "partial_candidate_score": 0.6666666666666666,
+        "partial_delta": 0.0444444444444444,
+        "fail_to_pass": [
+          "terminal-bench-adaptive-rejection-sampler"
+        ],
+        "pass_to_fail": [],
+        "improved_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-configure-git-webserver",
+          "terminal-bench-largest-eigenval",
+          "terminal-bench-tune-mjcf"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-cobol-modernization",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_severe_task_regression",
+        "baseline_score": 0.6222222222222222,
+        "candidate_score": 0.6666666666666666,
+        "delta": 0.0444444444444444,
+        "fail_to_pass": [
+          "terminal-bench-adaptive-rejection-sampler"
+        ],
+        "pass_to_fail": [],
+        "improved_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-configure-git-webserver",
+          "terminal-bench-largest-eigenval",
+          "terminal-bench-tune-mjcf"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-cobol-modernization",
+          "terminal-bench-make-mips-interpreter",
+          "terminal-bench-model-extraction-relu-logits"
+        ],
+        "candidate_changed_files": [
+          "packages/coding-agent/src/core/tools/bash.ts"
+        ],
+        "validation_failure": null,
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-terminal-glm-5-3-meta-same-pi-skyinfer-8w-full-18-direct-g5-tr3-te3-20260827T190327Z/cells/terminal/glm-5-3/pi/attempts/1/pi-source-evolution/controller/records/round-01"
+    },
+    {
+      "candidate_id": "meta-agent-smoke",
+      "status": "rejected",
+      "reason": "qualification_passed",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "meta-agent-smoke-qualification-attempt-1",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/stream-fn.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=qualification; failure_repeat=0; action=complete recursive edit, protocol, build, and smoke path unproven for this meta-agent session; verifier=controller qualification gate requires a real cumulative diff that clean-builds and passes Pi CLI smoke; pass_repeat=none"
+        ],
+        "root_cause": "No causal training defect exists this round: the counterfactual findings list is empty, the frozen target pool is empty, all training tasks are solved, and no prior evolution history or candidate trajectories exist to analyze. The only outstanding requirement is the controller's qualification that this session can produce a real source edit in /app/pi-source-candidate that survives the frozen clean-build and CLI-smoke path and a schema-valid submission.",
+        "mechanism": "Insert exactly one harmless source comment, '// RSIBench meta-agent smoke qualification edit.', as the first line of packages/agent/src/stream-fn.ts. The comment sits before the module's only import and alters no statements, types, or exported behavior; getDefaultStreamFn/setDefaultStreamFn semantics are identical after compilation. The edit exercises the full path: edit tool -> cumulative git diff -> frozen candidate checker (offline install, offline rebuild of all six packages, dist/cli.js --version smoke) -> schema-valid submit manifest, all of which passed.",
+        "evidence_basis": "runtime_failure",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The qualification task explicitly names packages/agent/src/stream-fn.ts with primary module PI_SRC_AGENT_LOOP; that file is listed in PI_SRC_AGENT_LOOP's owned paths in the module catalog and module guide, so the edit lands in a validly owned location on the default build path. A comment-only change there is the minimal harmless probe that proves rebuild integration (requires_core_rebuild=true) and protocol compliance without touching runtime behavior, provider serialization, or task policy, which the module boundary forbids changing here.",
+        "predicted_fixes": [
+          "Qualification gate passes: the cumulative diff against accepted_commit contains exactly the required first-line comment in packages/agent/src/stream-fn.ts, the offline rebuild compiles cleanly, and the Pi CLI smoke succeeds — each already verified by the frozen checker with passed=true. No training-task score change is claimed or expected."
+        ],
+        "regression_risks": [
+          "None expected: a single comment line cannot alter compiled runtime behavior; the frozen validator confirmed npm ci offline, build:offline across all packages, and pi-cli-smoke all pass on the edited tree."
+        ],
+        "targeted_checks": [
+          "candidate-self-check: python3 /app/rsibench-source-candidate-check.py --agent pi --source /app/pi-source-candidate --output /logs/agent/candidate-self-check.json (passed: npm-ci-offline, build-offline, pi-cli-smoke; candidate_sha256 ffbfcc8c88545e7c1f730d7676ae14dd2c0027ddba115c53d2f611492732165e)",
+          "diff-shape check: git diff in /app/pi-source-candidate shows exactly one file, one insertion, the required comment text as line 1 of packages/agent/src/stream-fn.ts"
+        ],
+        "analysis_tags": [
+          "qualification",
+          "smoke",
+          "non-scoring",
+          "PI_SRC_AGENT_LOOP",
+          "no-op-comment",
+          "empty-target-pool",
+          "no-causal-objectives",
+          "discard-after-validation"
+        ]
+      },
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "partial_candidate_score": null,
+        "partial_delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": [],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/volume/ywan/yss/rsibench/runs/formal-terminal-glm-5-3-meta-same-pi-skyinfer-8w-full-18-direct-g5-tr3-te3-20260827T190327Z/cells/terminal/glm-5-3/pi/attempts/1/pi-source-evolution/controller/records/meta-agent-smoke"
+    }
+  ],
+  "active_attempts_since_last_accept": [
+    "round-01",
+    "meta-agent-smoke"
+  ],
+  "prompt_policy": {
+    "performance_attempts": 0,
+    "performance_rejections": 0,
+    "blocked_after_no_lift": false,
+    "rejected_change_ids": [],
+    "required_action": "prompt_remains_eligible_with_causal_evidence"
+  }
+}

@@ -1,0 +1,78 @@
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index a688528..02ad90e 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -296,6 +296,18 @@ function estimateMessagesTokens(messages: AgentMessage[]): number {
+ /** Standard thinking levels */
+ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+ 
++/**
++ * Injected exactly once per session, only when the agent finishes a run on its
++ * own (final assistant message with no tool calls), as a queued follow-up.
++ */
++const FINAL_VERIFICATION_PASS_MESSAGE = [
++	"[system note] One-time final verification pass before this session ends.",
++	"Check the finished work against the original request:",
++	"1. Deliverables: every file or artifact the requester asked for exists at the exact requested path, in the requested format, holding the final verified result (not a stale, intermediate, or leftover test version).",
++	"2. Acceptance path: the requester's own workflow runs exactly as they described it — same commands, host, protocol, port, user, and working directory, not a local shortcut or approximation. Everything it depends on (services, daemons, packages, permissions, running processes) must already be installed, running, and fixed by you; do not defer it to the requester.",
++	"If either check fails, or you never exercised the requester's exact workflow end-to-end, fix the gap now and re-verify. If both checks already pass, reply with a one-sentence confirmation of what you verified. Do not start new work, refactoring, or further optimization.",
++].join("\n\n");
++
+ // ============================================================================
+ // AgentSession Class
+ // ============================================================================
+@@ -591,6 +603,9 @@ export class AgentSession {
+ 	// Track last assistant message for auto-compaction check
+ 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
+ 
++	/** Whether the one-time final verification pass has already been used in this session. */
++	private _finalVerificationGateUsed = false;
++
+ 	/** Internal handler for agent events - shared by subscribe and reconnect */
+ 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+ 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
+@@ -1097,11 +1112,44 @@ export class AgentSession {
+ 			return true;
+ 		}
+ 
++		// Completion-state gate: when the agent ends a run on its own (its final
++		// assistant message asks for no further tool calls), offer exactly one
++		// follow-up pass to verify the deliverable against the requester's own
++		// acceptance path before the session goes idle.
++		if (this._shouldQueueFinalVerification(msg)) {
++			this._finalVerificationGateUsed = true;
++			this.agent.followUp({
++				role: "user",
++				content: [{ type: "text", text: FINAL_VERIFICATION_PASS_MESSAGE }],
++				timestamp: Date.now(),
++			});
++			return true;
++		}
++
+ 		// The agent loop drains both queues before emitting agent_end. Any messages
+ 		// here were queued by agent_end extension handlers and need a continuation.
+ 		return this.agent.hasQueuedMessages();
+ 	}
+ 
++	/**
++	 * Decide whether the just-finished agent run should get the one-time final
++	 * verification pass.
++	 *
++	 * Fires only when the run completed naturally (the model itself decided it
++	 * was done: the last assistant message carries no tool calls and no error),
++	 * the session actually performed agentic work earlier, and the pass has not
++	 * been used before in this session. It never fires mid-run, so it cannot
++	 * change exploration, pacing, or persistence decisions before completion.
++	 */
++	private _shouldQueueFinalVerification(message: AssistantMessage): boolean {
++		if (this._finalVerificationGateUsed) return false;
++		if (message.stopReason === "error" || message.stopReason === "aborted") return false;
++		if (message.content.some((c) => c.type === "toolCall")) return false;
++		return this.agent.state.messages.some(
++			(m) => m.role === "assistant" && m.content.some((c) => c.type === "toolCall"),
++		);
++	}
++
+ 	/**
+ 	 * Send a prompt to the agent.
+ 	 * - Handles extension commands (registered via pi.registerCommand) immediately, even during streaming
