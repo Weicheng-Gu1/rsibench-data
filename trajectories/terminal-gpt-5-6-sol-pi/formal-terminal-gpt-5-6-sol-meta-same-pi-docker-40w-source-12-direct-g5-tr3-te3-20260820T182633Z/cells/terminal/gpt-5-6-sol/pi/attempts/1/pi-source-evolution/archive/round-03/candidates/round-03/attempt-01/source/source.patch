@@ -1,0 +1,132 @@
+diff --git a/packages/coding-agent/src/core/tools/read.ts b/packages/coding-agent/src/core/tools/read.ts
+index 42f3058..22934c1 100644
+--- a/packages/coding-agent/src/core/tools/read.ts
++++ b/packages/coding-agent/src/core/tools/read.ts
+@@ -1,4 +1,5 @@
+-import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
++import { basename, dirname, extname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
++import { deflateSync } from "node:zlib";
+ import type { AgentTool } from "@earendil-works/pi-agent-core";
+ import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
+ import { Text } from "@earendil-works/pi-tui";
+@@ -35,6 +36,98 @@ interface CompactReadClassification {
+ }
+ 
+ const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
++const PORTABLE_IMAGE_EXTENSIONS = new Set([".pgm", ".ppm", ".pnm"]);
++
++function crc32(data: Uint8Array): number {
++	let crc = 0xffffffff;
++	for (const byte of data) {
++		crc ^= byte;
++		for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
++	}
++	return (crc ^ 0xffffffff) >>> 0;
++}
++
++function pngChunk(type: string, data: Uint8Array): Buffer {
++	const typeBytes = Buffer.from(type, "ascii");
++	const chunk = Buffer.alloc(12 + data.length);
++	chunk.writeUInt32BE(data.length, 0);
++	typeBytes.copy(chunk, 4);
++	Buffer.from(data).copy(chunk, 8);
++	chunk.writeUInt32BE(crc32(chunk.subarray(4, 8 + data.length)), 8 + data.length);
++	return chunk;
++}
++
++/** Convert the simple portable gray/pixmap formats commonly produced by analysis scripts to PNG. */
++function convertPortableImageToPng(input: Buffer): Buffer | undefined {
++	let cursor = 0;
++	const token = (): string | undefined => {
++		while (cursor < input.length) {
++			if (input[cursor] === 0x23) {
++				while (cursor < input.length && input[cursor] !== 0x0a) cursor++;
++			} else if (input[cursor] <= 0x20) cursor++;
++			else break;
++		}
++		const start = cursor;
++		while (cursor < input.length && input[cursor] > 0x20 && input[cursor] !== 0x23) cursor++;
++		return cursor > start ? input.toString("ascii", start, cursor) : undefined;
++	};
++
++	const magic = token();
++	if (!magic || !["P2", "P3", "P5", "P6"].includes(magic)) return undefined;
++	const width = Number(token());
++	const height = Number(token());
++	const maxValue = Number(token());
++	if (
++		!Number.isInteger(width) ||
++		!Number.isInteger(height) ||
++		width <= 0 ||
++		height <= 0 ||
++		maxValue <= 0 ||
++		maxValue > 255
++	)
++		return undefined;
++
++	const channels = magic === "P3" || magic === "P6" ? 3 : 1;
++	const sampleCount = width * height * channels;
++	if (!Number.isSafeInteger(sampleCount) || sampleCount > 200_000_000) return undefined;
++	let samples: Uint8Array;
++	if (magic === "P5" || magic === "P6") {
++		if (cursor >= input.length || input[cursor] > 0x20) return undefined;
++		const separator = input[cursor++];
++		if (separator === 0x0d && input[cursor] === 0x0a) cursor++;
++		if (input.length - cursor < sampleCount) return undefined;
++		samples = input.subarray(cursor, cursor + sampleCount);
++	} else {
++		const parsed = Buffer.allocUnsafe(sampleCount);
++		for (let index = 0; index < sampleCount; index++) {
++			const value = Number(token());
++			if (!Number.isFinite(value) || value < 0 || value > maxValue) return undefined;
++			parsed[index] = value;
++		}
++		samples = parsed;
++	}
++
++	const rows = Buffer.allocUnsafe(height * (1 + width * channels));
++	for (let row = 0; row < height; row++) {
++		const outputOffset = row * (1 + width * channels);
++		rows[outputOffset] = 0;
++		for (let column = 0; column < width * channels; column++) {
++			const value = samples[row * width * channels + column] ?? 0;
++			rows[outputOffset + 1 + column] = maxValue === 255 ? value : Math.round((value * 255) / maxValue);
++		}
++	}
++	const header = Buffer.alloc(13);
++	header.writeUInt32BE(width, 0);
++	header.writeUInt32BE(height, 4);
++	header[8] = 8;
++	header[9] = channels === 1 ? 0 : 2;
++	return Buffer.concat([
++		Buffer.from("89504e470d0a1a0a", "hex"),
++		pngChunk("IHDR", header),
++		pngChunk("IDAT", deflateSync(rows)),
++		pngChunk("IEND", Buffer.alloc(0)),
++	]);
++}
+ 
+ /**
+  * Pluggable operations for the read tool.
+@@ -240,13 +333,18 @@ export function createReadToolDefinition(
+ 							// Check if file exists and is readable.
+ 							await ops.access(absolutePath);
+ 							if (aborted) return;
+-							const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
++							let mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
++							let portableImage: Buffer | undefined;
++							if (!mimeType && PORTABLE_IMAGE_EXTENSIONS.has(extname(absolutePath).toLowerCase())) {
++								portableImage = convertPortableImageToPng(await ops.readFile(absolutePath));
++								if (portableImage) mimeType = "image/png";
++							}
+ 							let content: (TextContent | ImageContent)[];
+ 							let details: ReadToolDetails | undefined;
+ 							const nonVisionImageNote = getNonVisionImageNote(ctx?.model);
+ 							if (mimeType) {
+-								// Read image as binary.
+-								const buffer = await ops.readFile(absolutePath);
++								// Read image as binary. Portable maps are normalized locally so models can inspect them directly.
++								const buffer = portableImage ?? (await ops.readFile(absolutePath));
+ 								const processed = await processImage(buffer, mimeType, { autoResizeImages });
+ 								if (!processed.ok) {
+ 									let textNote = `Read image file [${mimeType}]\n${processed.message}`;

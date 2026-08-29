@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Sanitize MAC addresses only in the model-facing copy of tool observations, preventing a demonstrated provider safety rejection while preserving full session and UI evidence.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "sanitize-mac-addresses-at-model-handoff",
+    "failure_evidence": [
+      "task=terminal-bench-qemu-alpine-ssh; failure_repeat=0; action=action_06 ran ip link and its tool observation exposed 00:00:00:00:00:00 and 52:54:00:12:34:56; verifier=the next provider request was rejected with sensitive contain before SSH could be verified; pass_repeat=1"
+    ],
+    "root_cause": "A routine network-diagnostics observation included MAC addresses. The default model handoff replayed those identifiers verbatim, causing the provider safety gateway to reject the next turn and terminate an otherwise progressing QEMU setup. Passing repeat 1 completed and externally verified SSH without encountering that rejection.",
+    "mechanism": "The default coding-agent convertToLlm path now replaces colon- or hyphen-delimited MAC addresses in textual tool results with a model-visible placeholder. Stored tool results remain unchanged for session and UI fidelity, while surrounding interface state and diagnostics remain available to the model.",
+    "evidence_basis": "within_task_contrast",
+    "prior_attempt_disposition": "improve_accepted",
+    "why_this_component": "packages/coding-agent/src/core/messages.ts is reached by the default SDK agent configuration before every provider handoff and owns the model-visible representation of observations. Filtering here is earlier and more reliable than retrying a deterministically rejected payload, and narrower than changing provider policy or task guidance.",
+    "predicted_fixes": [
+      "terminal-bench-qemu-alpine-ssh repeat 0 conditions will hand the next turn redacted MAC placeholders instead of the gateway-triggering identifiers, allowing the agent to correct the failed password command and verify SSH as in passing repeats.",
+      "Other tasks using ordinary network diagnostics will retain actionable interface and link-state output without losing the run to identifier-sensitive provider filtering."
+    ],
+    "regression_risks": [
+      "Tasks that explicitly require reading a MAC address will no longer expose its exact value to the model through tool-result text, though the original remains stored and visible outside model context.",
+      "The narrow textual pattern may redact MAC-shaped strings that are not hardware addresses."
+    ],
+    "targeted_checks": [
+      "Replay terminal-bench-qemu-alpine-ssh repeat 0 through action_06 and confirm the following provider payload contains [MAC address omitted], receives a normal response, and the final ssh -p 2222 root@localhost verification succeeds.",
+      "Pass representative ip link output through convertToLlm and verify MAC addresses are replaced while interface names, flags, and state remain intact; verify the original AgentMessage is unchanged.",
+      "Run git diff --check."
+    ],
+    "analysis_tags": [
+      "PI_SRC_OBSERVATION",
+      "tool-result-handoff",
+      "provider-safety-recovery",
+      "mac-address-redaction",
+      "within-task-contrast"
+    ]
+  }
+}

@@ -1,0 +1,149 @@
+Get:1 http://mirrors.aliyun.com/ubuntu noble InRelease [256 kB]
+Get:2 http://mirrors.aliyun.com/ubuntu noble-updates InRelease [126 kB]
+Get:3 http://mirrors.aliyun.com/ubuntu noble-backports InRelease [126 kB]
+Get:4 http://mirrors.aliyun.com/ubuntu noble-security InRelease [126 kB]
+Get:5 http://mirrors.aliyun.com/ubuntu noble/restricted amd64 Packages [117 kB]
+Get:6 http://mirrors.aliyun.com/ubuntu noble/multiverse amd64 Packages [331 kB]
+Get:7 http://mirrors.aliyun.com/ubuntu noble/main amd64 Packages [1808 kB]
+Get:8 http://mirrors.aliyun.com/ubuntu noble/universe amd64 Packages [19.3 MB]
+Get:9 http://mirrors.aliyun.com/ubuntu noble-updates/universe amd64 Packages [2142 kB]
+Get:10 http://mirrors.aliyun.com/ubuntu noble-updates/main amd64 Packages [1508 kB]
+Get:11 http://mirrors.aliyun.com/ubuntu noble-updates/restricted amd64 Packages [1814 kB]
+Get:12 http://mirrors.aliyun.com/ubuntu noble-updates/multiverse amd64 Packages [55.8 kB]
+Get:13 http://mirrors.aliyun.com/ubuntu noble-backports/universe amd64 Packages [35.9 kB]
+Get:14 http://mirrors.aliyun.com/ubuntu noble-backports/main amd64 Packages [48.9 kB]
+Get:15 http://mirrors.aliyun.com/ubuntu noble-backports/multiverse amd64 Packages [671 B]
+Get:16 http://mirrors.aliyun.com/ubuntu noble-security/restricted amd64 Packages [1702 kB]
+Get:17 http://mirrors.aliyun.com/ubuntu noble-security/universe amd64 Packages [1525 kB]
+Get:18 http://mirrors.aliyun.com/ubuntu noble-security/multiverse amd64 Packages [50.0 kB]
+Get:19 http://mirrors.aliyun.com/ubuntu noble-security/main amd64 Packages [1183 kB]
+Fetched 32.3 MB in 9s (3678 kB/s)
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  libcurl4t64
+The following packages will be upgraded:
+  curl libcurl4t64
+2 upgraded, 0 newly installed, 0 to remove and 49 not upgraded.
+Need to get 569 kB of archives.
+After this operation, 2048 B of additional disk space will be used.
+Get:1 http://mirrors.aliyun.com/ubuntu noble-updates/main amd64 curl amd64 8.5.0-2ubuntu10.12 [227 kB]
+Get:2 http://mirrors.aliyun.com/ubuntu noble-updates/main amd64 libcurl4t64 amd64 8.5.0-2ubuntu10.12 [343 kB]
+debconf: delaying package configuration, since apt-utils is not installed
+Fetched 569 kB in 0s (5430 kB/s)
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 5056 files and directories currently installed.)
+Preparing to unpack .../curl_8.5.0-2ubuntu10.12_amd64.deb ...
+Unpacking curl (8.5.0-2ubuntu10.12) over (8.5.0-2ubuntu10.6) ...
+Preparing to unpack .../libcurl4t64_8.5.0-2ubuntu10.12_amd64.deb ...
+Unpacking libcurl4t64:amd64 (8.5.0-2ubuntu10.12) over (8.5.0-2ubuntu10.6) ...
+Setting up libcurl4t64:amd64 (8.5.0-2ubuntu10.12) ...
+Setting up curl (8.5.0-2ubuntu10.12) ...
+Processing triggers for libc-bin (2.39-0ubuntu8.6) ...
+downloading uv 0.9.5 x86_64-unknown-linux-gnu
+no checksums to verify
+installing to /root/.local/bin
+  uv
+  uvx
+everything's installed!
+
+To add $HOME/.local/bin to your PATH, either restart your shell or run:
+
+    source $HOME/.local/bin/env (sh, bash, zsh)
+    source $HOME/.local/bin/env.fish (fish)
+Downloading cpython-3.13.9-linux-x86_64-gnu (download) (32.0MiB)
+ Downloading cpython-3.13.9-linux-x86_64-gnu (download)
+Downloading pygments (1.2MiB)
+ Downloading pygments
+Installed 6 packages in 13ms
+============================= test session starts ==============================
+platform linux -- Python 3.13.9, pytest-8.4.1, pluggy-1.6.0
+rootdir: /tests
+plugins: json-ctrf-0.3.5
+collected 6 items
+
+../tests/test_outputs.py ..F...                                          [100%]
+
+=================================== FAILURES ===================================
+___________________ test_compare_golden_vs_solution_runtime ____________________
+
+    def test_compare_golden_vs_solution_runtime():
+        """
+        Compare the runtime of the golden query and the solution query.
+        """
+        assert DB_PATH.exists(), f"DB not found at {DB_PATH}"
+        assert GOLDEN_SQL_PATH.exists(), f"Golden SQL not found at {GOLDEN_SQL_PATH}"
+        assert SOL_SQL_PATH.exists(), f"Solution SQL not found at {SOL_SQL_PATH}"
+    
+        q_golden = _read_sql(GOLDEN_SQL_PATH)
+        q_sol = _read_sql(SOL_SQL_PATH)
+    
+        con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        try:
+            # Keep PRAGMAs read-only friendly
+            con.execute("PRAGMA temp_store=MEMORY")
+            con.execute("PRAGMA cache_size=-100000")  # ~100MB page cache if available
+            con.execute("PRAGMA case_sensitive_like=OFF")
+            con.execute("PRAGMA optimize")
+    
+            # Warm-up (not timed)
+            _fetch_all(con, q_golden)
+            _fetch_all(con, q_sol)
+    
+            times_golden = []
+            times_sol = []
+    
+            # Alternate order each iteration to reduce cache bias
+            for i in range(ITERATIONS):
+                if i % 10 == 0:
+                    print(f"Running iteration {i} of {ITERATIONS}")
+    
+                if i % 2 == 0:
+                    times_golden.append(_run_and_time(con, q_golden))
+                    times_sol.append(_run_and_time(con, q_sol))
+                else:
+                    times_sol.append(_run_and_time(con, q_sol))
+                    times_golden.append(_run_and_time(con, q_golden))
+    
+            summary = {
+                "iterations": ITERATIONS,
+                "golden": {
+                    "median_s": stats.median(times_golden),
+                    "min_s": min(times_golden),
+                    "max_s": max(times_golden),
+                },
+                "solution": {
+                    "median_s": stats.median(times_sol),
+                    "min_s": min(times_sol),
+                    "max_s": max(times_sol),
+                },
+            }
+            # Derived metric
+            summary["speedup_solution_vs_golden"] = (
+                summary["golden"]["median_s"] / summary["solution"]["median_s"]
+            )
+    
+            print(summary)
+    
+            # performance threshold:
+>           assert summary["solution"]["median_s"] <= 1.05 * summary["golden"]["median_s"]
+E           assert 0.9279438573867083 <= (1.05 * 0.8778771590441465)
+
+/tests/test_outputs.py:142: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Running iteration 0 of 5
+{'iterations': 5, 'golden': {'median_s': 0.8778771590441465, 'min_s': 0.8743355423212051, 'max_s': 0.8880889192223549}, 'solution': {'median_s': 0.9279438573867083, 'min_s': 0.9255537465214729, 'max_s': 0.9324143193662167}, 'speedup_solution_vs_golden': 0.9460455522777419}
+==================================== PASSES ====================================
+___________________ test_solution_contains_single_sql_query ____________________
+----------------------------- Captured stdout call -----------------------------
+✓ Solution file contains exactly one valid SQL SELECT statement
+=========================== short test summary info ============================
+PASSED ../tests/test_outputs.py::test_compare_golden_vs_my_sql_query_correctness
+PASSED ../tests/test_outputs.py::test_check_for_db_modifications
+PASSED ../tests/test_outputs.py::test_outputs_match_exactly
+PASSED ../tests/test_outputs.py::test_solution_contains_single_sql_query
+PASSED ../tests/test_outputs.py::test_solution_is_small
+FAILED ../tests/test_outputs.py::test_compare_golden_vs_solution_runtime - as...
+=================== 1 failed, 5 passed in 439.49s (0:07:19) ====================
