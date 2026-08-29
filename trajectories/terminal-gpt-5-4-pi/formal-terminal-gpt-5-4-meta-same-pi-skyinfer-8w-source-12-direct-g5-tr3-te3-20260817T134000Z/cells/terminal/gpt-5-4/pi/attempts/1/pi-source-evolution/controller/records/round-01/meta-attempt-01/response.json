@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "I inspected the training opportunity index, evolution history, one raw failed trajectory, and one raw successful contrast before editing. The strongest source-level opportunity was the agent’s retry classifier: in terminal-bench-largest-eigenval repeat 0, the model explored benchmark ideas and then hit provider stream idle timeout errors, after which the run stalled and timed out instead of continuing the same line of work. The successful same-task repeat 1 solved the task after additional tool-driven iteration, so preserving progress across transient stalled streams is plausibly outcome-relevant. Current source already emits retryable-looking idle-timeout text from the OpenAI-completions stream layer, but AgentSession only auto-retries errors recognized by isRetryableAssistantError(). I made a targeted default-path change in AgentSession so provider stream idle timeout / stalled-stream / missing-finish-reason errors are also treated as retryable, allowing the existing backoff-and-continue path to fire for these known transient transport failures.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "round-01-agent-session-idle-stream-retry",
+    "failure_evidence": [
+      "/app/pi-source-evidence/references/388fcf07e9dad2ff-training-opportunity-index.json",
+      "/app/pi-source-evidence/references/f2c7eda02871799b-evolution-history.json",
+      "task=terminal-bench-largest-eigenval; failure_repeat=0; action=action_03 after benchmarking attempts, assistant hit 'Provider stream idle timeout: no response data received for 300s' and the run did not recover into further task progress; verifier=trajectory ended with harbor agent failure AgentTimeoutError and reward 0; pass_repeat=1"
+    ],
+    "root_cause": "The provider stream runtime already surfaces stalled-stream failures as assistant stopReason=error with explicit idle-timeout text, but AgentSession’s retry classifier did not recognize those errors as retryable, so transient stream stalls consumed the run budget without invoking the existing auto-retry continuation path.",
+    "mechanism": "Extend AgentSession._isRetryableError() to classify provider stream idle timeout, stalled connection, and stream-ended-without-finish-reason errors as retryable in addition to the existing generic retryable assistant errors. This reuses the current retry backoff and continue flow on the normal RSIBench execution path.",
+    "evidence_basis": "within_task_contrast",
+    "prior_attempt_disposition": "new_direction",
+    "why_this_component": "The cited failures happen after provider errors have already been converted into assistant error messages and then handled by AgentSession post-run logic. PI_SRC_CODING_SESSION owns that orchestration and retry decision on the default path; changing prompt guidance would not trigger the existing retry machinery at the failure moment.",
+    "predicted_fixes": [
+      "Tasks that currently lose a turn to transient stalled provider streams will automatically re-issue the interrupted model call and continue from existing context instead of idling until the overall agent timeout.",
+      "Within tasks like terminal-bench-largest-eigenval, repeats that already had a viable investigation underway before the stalled stream should more often reach the later editing/verification steps seen in the passing contrast."
+    ],
+    "regression_risks": [
+      "If a provider repeatedly returns the same idle-timeout text for non-transient reasons, retries may spend some budget before failing, though bounded by existing retry settings.",
+      "Broadening retry matching by message text could retry a small number of adjacent error cases that previously failed fast."
+    ],
+    "targeted_checks": [
+      "agent-session",
+      "cli-smoke",
+      "Replay targeted train task terminal-bench-largest-eigenval and verify a stalled-stream error now triggers auto_retry_start/continue instead of immediate run abandonment",
+      "Spot-check another stalled-stream trajectory such as terminal-bench-model-extraction-relu-logits for improved recovery behavior"
+    ],
+    "analysis_tags": [
+      "coding-session",
+      "retry",
+      "stream-stall-recovery",
+      "within-task-contrast",
+      "default-path"
+    ]
+  }
+}

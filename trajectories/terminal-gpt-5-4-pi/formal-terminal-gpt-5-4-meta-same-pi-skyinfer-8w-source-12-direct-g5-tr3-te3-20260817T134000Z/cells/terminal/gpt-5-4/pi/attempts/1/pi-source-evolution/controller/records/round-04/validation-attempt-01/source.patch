@@ -1,0 +1,49 @@
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index c3a3473..1a743b8 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -1063,6 +1063,9 @@ export class AgentSession {
+ 		try {
+ 			await this.agent.prompt(messages);
+ 			while (await this._handlePostAgentRun()) {
++				if (!this._canContinueCurrentTranscript()) {
++					break;
++				}
+ 				await this.agent.continue();
+ 			}
+ 		} finally {
+@@ -1080,7 +1083,7 @@ export class AgentSession {
+ 		}
+ 
+ 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
+-			return true;
++			return this._canContinueCurrentTranscript();
+ 		}
+ 
+ 		if (msg.stopReason === "error" && this._retryAttempt > 0) {
+@@ -1094,12 +1097,22 @@ export class AgentSession {
+ 		}
+ 
+ 		if (await this._checkCompaction(msg)) {
+-			return true;
++			return this._canContinueCurrentTranscript();
+ 		}
+ 
+ 		// The agent loop drains both queues before emitting agent_end. Any messages
+-		// here were queued by agent_end extension handlers and need a continuation.
+-		return this.agent.hasQueuedMessages();
++		// here were queued by agent_end extension handlers and need a continuation,
++		// but only when the current transcript tail is legally continuable.
++		return this.agent.hasQueuedMessages() && this._canContinueCurrentTranscript();
++	}
++
++	private _canContinueCurrentTranscript(): boolean {
++		const messages = this.agent.state.messages;
++		const lastMessage = messages[messages.length - 1];
++		if (!lastMessage) {
++			return false;
++		}
++		return lastMessage.role === "user" || lastMessage.role === "toolResult";
+ 	}
+ 
+ 	/**

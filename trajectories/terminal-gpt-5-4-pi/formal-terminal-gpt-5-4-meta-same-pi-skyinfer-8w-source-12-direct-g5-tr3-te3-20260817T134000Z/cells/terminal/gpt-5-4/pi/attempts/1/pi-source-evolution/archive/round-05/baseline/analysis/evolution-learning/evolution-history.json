@@ -1,0 +1,434 @@
+{
+  "schema_version": 2,
+  "purpose": "Falsifiable cross-round memory without controller-defined semantic mechanism classes. The Meta-agent owns causal interpretation.",
+  "attempts": [
+    {
+      "candidate_id": "round-01",
+      "status": "accepted",
+      "reason": "direct_full_training_improved",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-01-agent-session-idle-stream-retry",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_CODING_SESSION",
+        "compound_modules": [],
+        "files": [
+          "packages/coding-agent/src/core/agent-session.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "/app/pi-source-evidence/references/388fcf07e9dad2ff-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/f2c7eda02871799b-evolution-history.json",
+          "task=terminal-bench-largest-eigenval; failure_repeat=0; action=action_03 after benchmarking attempts, assistant hit 'Provider stream idle timeout: no response data received for 300s' and the run did not recover into further task progress; verifier=trajectory ended with harbor agent failure AgentTimeoutError and reward 0; pass_repeat=1"
+        ],
+        "root_cause": "The provider stream runtime already surfaces stalled-stream failures as assistant stopReason=error with explicit idle-timeout text, but AgentSession’s retry classifier did not recognize those errors as retryable, so transient stream stalls consumed the run budget without invoking the existing auto-retry continuation path.",
+        "mechanism": "Extend AgentSession._isRetryableError() to classify provider stream idle timeout, stalled connection, and stream-ended-without-finish-reason errors as retryable in addition to the existing generic retryable assistant errors. This reuses the current retry backoff and continue flow on the normal RSIBench execution path.",
+        "evidence_basis": "within_task_contrast",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The cited failures happen after provider errors have already been converted into assistant error messages and then handled by AgentSession post-run logic. PI_SRC_CODING_SESSION owns that orchestration and retry decision on the default path; changing prompt guidance would not trigger the existing retry machinery at the failure moment.",
+        "predicted_fixes": [
+          "Tasks that currently lose a turn to transient stalled provider streams will automatically re-issue the interrupted model call and continue from existing context instead of idling until the overall agent timeout.",
+          "Within tasks like terminal-bench-largest-eigenval, repeats that already had a viable investigation underway before the stalled stream should more often reach the later editing/verification steps seen in the passing contrast."
+        ],
+        "regression_risks": [
+          "If a provider repeatedly returns the same idle-timeout text for non-transient reasons, retries may spend some budget before failing, though bounded by existing retry settings.",
+          "Broadening retry matching by message text could retry a small number of adjacent error cases that previously failed fast."
+        ],
+        "targeted_checks": [
+          "agent-session",
+          "cli-smoke",
+          "Replay targeted train task terminal-bench-largest-eigenval and verify a stalled-stream error now triggers auto_retry_start/continue instead of immediate run abandonment",
+          "Spot-check another stalled-stream trajectory such as terminal-bench-model-extraction-relu-logits for improved recovery behavior"
+        ],
+        "analysis_tags": [
+          "coding-session",
+          "retry",
+          "stream-stall-recovery",
+          "within-task-contrast",
+          "default-path"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.3555555555555555,
+        "candidate_score": 0.4444444444444444,
+        "delta": 0.0888888888888889,
+        "fail_to_pass": [
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-tune-mjcf"
+        ],
+        "pass_to_fail": [],
+        "improved_tasks": [
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-tune-mjcf"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-cobol-modernization",
+          "terminal-bench-regex-log"
+        ]
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/tmp/rsibench-direct-meta-20260817T105156Z/runs/formal-terminal-gpt-5-4-meta-same-pi-skyinfer-8w-source-12-direct-g5-tr3-te3-20260817T134000Z/cells/terminal/gpt-5-4/pi/attempts/1/pi-source-evolution/controller/records/round-01"
+    },
+    {
+      "candidate_id": "round-02",
+      "status": "rejected",
+      "reason": "direct_full_training_no_improvement",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-02-agent-session-safe-continue-guard",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_CODING_SESSION",
+        "compound_modules": [],
+        "files": [
+          "packages/coding-agent/src/core/agent-session.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "/app/pi-source-evidence/references/7d68abd478a7678c-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/1ffdab79eedce8a6-evolution-history.json",
+          "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=1; action=action_38 after a long failing run that already surfaced an assistant error/terminal state, session orchestration remained on the post-run continuation path instead of requiring a legally continuable non-assistant tail; verifier=trajectory consumed 1086804 tokens and still failed; pass_repeat=2",
+          "task=terminal-bench-cobol-modernization; failure_repeat=0; action=action_13 the run performed repeated reads and edits without converging, showing vulnerable session-level churn after terminal assistant states compared with the concise successful repeat; verifier=reward 0 with many repeated tool calls; pass_repeat=1"
+        ],
+        "root_cause": "AgentSession's post-run loop treated queued follow-up work as sufficient reason to continue without first verifying that the current agent state still satisfied agent-loop continue preconditions. When the last persisted message is an assistant message from an error or other terminal stop, continue() is invalid and any post-run continuation attempt is wasted or brittle.",
+        "mechanism": "Add a default-path guard in AgentSession that checks whether the current state can legally continue before both returning queued-continuation intent and before calling agent.continue(). This keeps retries and extension-queued post-run work on the normal path when the tail message is user/toolResult, but suppresses invalid continuation when the tail is assistant.",
+        "evidence_basis": "within_task_contrast",
+        "prior_attempt_disposition": "improve_accepted",
+        "why_this_component": "The failure happens inside coding-session post-run orchestration after provider/runtime output has already been converted into assistant messages. PI_SRC_CODING_SESSION owns the while-loop that decides whether to call agent.continue() again. Agent-loop already rejects assistant-tail continuation, so the safest high-leverage fix is to gate continuation earlier in AgentSession on the default RSIBench execution path.",
+        "predicted_fixes": [
+          "Runs that end a turn with an assistant error or other assistant-tail terminal state will stop cleanly instead of attempting or signaling an invalid continuation path.",
+          "Tasks with queued post-run work from extension hooks or retry cleanup will continue only when the transcript tail is legally continuable, reducing wasted churn in long failing trajectories.",
+          "The previously accepted idle-stream retry behavior remains active, but its follow-on continuation now respects actual transcript state before re-entering the agent loop."
+        ],
+        "regression_risks": [
+          "If some external integration implicitly relied on AgentSession attempting continue() even with an assistant-tail transcript, that flow will now stop earlier.",
+          "A queued extension follow-up added only after agent_end without appending a continuable user/custom/toolResult message will no longer trigger a useless continue cycle."
+        ],
+        "targeted_checks": [
+          "agent-session",
+          "cli-smoke",
+          "Replay terminal-bench-adaptive-rejection-sampler repeat 1 and verify post-run logic does not attempt continuation when the tail message remains assistant after an error.",
+          "Replay a passing queued-follow-up path and verify continuation still occurs when the tail message is user or toolResult."
+        ],
+        "analysis_tags": [
+          "coding-session",
+          "continue-guard",
+          "post-run-orchestration",
+          "within-task-contrast",
+          "default-path"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.4444444444444444,
+        "candidate_score": 0.3777777777777777,
+        "delta": -0.06666666666666671,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-sanitize-git-repo"
+        ],
+        "improved_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-largest-eigenval"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-regex-log",
+          "terminal-bench-sanitize-git-repo"
+        ]
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_no_improvement",
+        "baseline_score": 0.4444444444444444,
+        "candidate_score": 0.3777777777777777,
+        "delta": -0.06666666666666671,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-sanitize-git-repo"
+        ],
+        "improved_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-largest-eigenval"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-regex-log",
+          "terminal-bench-sanitize-git-repo"
+        ],
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/tmp/rsibench-direct-meta-20260817T105156Z/runs/formal-terminal-gpt-5-4-meta-same-pi-skyinfer-8w-source-12-direct-g5-tr3-te3-20260817T134000Z/cells/terminal/gpt-5-4/pi/attempts/1/pi-source-evolution/controller/records/round-02"
+    },
+    {
+      "candidate_id": "round-03",
+      "status": "rejected",
+      "reason": "direct_full_training_no_improvement",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-03-tool-path-current-dir-preserve-dot",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_TOOL_RUNTIME",
+        "compound_modules": [],
+        "files": [
+          "packages/coding-agent/src/core/tools/path-utils.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "/app/pi-source-evidence/references/458773903c95752c-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/a79beee491cafe80-evolution-history.json",
+          "task=terminal-bench-cobol-modernization; failure_repeat=0; action=action_13 repeated reads and edits after early environment/file-state uncertainty instead of converging like pass_repeat=1; verifier=reward 0 with many repeated tool calls; pass_repeat=1",
+          "task=terminal-bench-regex-log; failure_repeat=0; action=action_03 assistant took a very short direct write path without checking the environment, contrasting with pass_repeat=1 where a small extra inspection/verification step succeeded; verifier=reward 0; pass_repeat=1"
+        ],
+        "root_cause": "The shared tool path helper eagerly resolves current-directory placeholders such as \".\" into the absolute cwd on the default execution path. That makes tool call rendering and some error/reporting text diverge from the documented schema contract that default directory arguments are represented as current-directory requests, adding unnecessary absolute-path noise exactly when the model is deciding where to inspect first.",
+        "mechanism": "Adjust resolveToCwd() so literal current-directory placeholders (\".\", \"./\", and empty string) preserve the symbolic \".\" result instead of being rewritten to the absolute cwd. All other paths still resolve normally. This changes model-visible tool call/error text on the default path while leaving actual nontrivial path resolution untouched.",
+        "evidence_basis": "within_task_contrast",
+        "prior_attempt_disposition": "rollback_and_pivot",
+        "why_this_component": "PI_SRC_TOOL_RUNTIME owns tool argument/path handling on the normal RSIBench path. The causal trigger occurs before any provider/runtime boundary: the model receives tool affordances and outcomes derived from resolveToCwd(), so improving this helper directly affects default read/find/ls/write path semantics without relying on prompt changes.",
+        "predicted_fixes": [
+          "Tool calls and path-related messages for default current-directory operations will stay compact and schema-aligned, reducing avoidable environment confusion at the start of file-inspection tasks.",
+          "Tasks that rely on quick directory inspection before deeper reads should more often preserve the simple '.' mental model instead of shifting to verbose absolute-path references."
+        ],
+        "regression_risks": [
+          "If any caller implicitly expected resolveToCwd('.', cwd) to return an absolute path for non-display logic, behavior could differ for that exact placeholder case.",
+          "The lift may be small if most failures are dominated by higher-level reasoning rather than tool-surface clarity."
+        ],
+        "targeted_checks": [
+          "tools",
+          "Replay terminal-bench-cobol-modernization repeat 0 and verify early tool path text for current-directory operations stays '.'-style rather than absolute cwd",
+          "Replay a simple inspection task such as terminal-bench-regex-log and verify read/find/ls default-path outputs remain compact and actionable"
+        ],
+        "analysis_tags": [
+          "tool-runtime",
+          "path-resolution",
+          "default-path",
+          "within-task-contrast",
+          "observation-clarity"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.4444444444444444,
+        "candidate_score": 0.3555555555555555,
+        "delta": -0.0888888888888889,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-qemu-alpine-ssh"
+        ],
+        "improved_tasks": [
+          "terminal-bench-largest-eigenval"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-tune-mjcf"
+        ]
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_no_improvement",
+        "baseline_score": 0.4444444444444444,
+        "candidate_score": 0.3555555555555555,
+        "delta": -0.0888888888888889,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-qemu-alpine-ssh"
+        ],
+        "improved_tasks": [
+          "terminal-bench-largest-eigenval"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-tune-mjcf"
+        ],
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/tmp/rsibench-direct-meta-20260817T105156Z/runs/formal-terminal-gpt-5-4-meta-same-pi-skyinfer-8w-source-12-direct-g5-tr3-te3-20260817T134000Z/cells/terminal/gpt-5-4/pi/attempts/1/pi-source-evolution/controller/records/round-03"
+    },
+    {
+      "candidate_id": "round-04",
+      "status": "rejected",
+      "reason": "direct_full_training_no_improvement",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "round-04-agent-session-post-run-continue-legality-guard",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_CODING_SESSION",
+        "compound_modules": [],
+        "files": [
+          "packages/coding-agent/src/core/agent-session.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "/app/pi-source-evidence/references/d7c16a3c00d05d2e-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/2da44b11af5f7b13-evolution-history.json",
+          "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=1; action=action_38 after a long run ending in assistant error/terminal state, session post-run logic remained on the continuation path instead of requiring a continuable user/toolResult tail; verifier=trajectory consumed 1086804 tokens and still failed; pass_repeat=2",
+          "task=terminal-bench-cobol-modernization; failure_repeat=0; action=action_13 repeated reads/edits and no convergence after the initial path diverged from the concise successful repeat; verifier=reward 0 with many repeated tool calls; pass_repeat=1"
+        ],
+        "root_cause": "AgentSession post-run orchestration could signal another continue cycle after retry/compaction/queued-follow-up handling without verifying that the current persisted transcript tail still satisfied Agent.continue() legality. When the tail remained an assistant message, the session could stay on a useless continuation path after terminal assistant states, contributing to long churny failures.",
+        "mechanism": "Add a narrow default-path legality check in AgentSession that only allows post-run continuation when the current transcript tail is user or toolResult. The guard is applied both when _handlePostAgentRun reports more work and immediately before calling agent.continue(), preserving the accepted retry mechanism but preventing assistant-tail post-run continuation after terminal states.",
+        "evidence_basis": "within_task_contrast",
+        "prior_attempt_disposition": "improve_accepted",
+        "why_this_component": "The failure happens in coding-session post-run control flow on the normal RSIBench execution path, after provider output has already been converted into assistant messages and after agent-core has established continue() preconditions. PI_SRC_CODING_SESSION owns the while-loop that decides whether to re-enter the agent loop; prompt or tool changes would not affect this runtime decision point.",
+        "predicted_fixes": [
+          "terminal-bench-adaptive-rejection-sampler repeat 1 should stop cleanly once post-run retry/compaction leaves an assistant-tail transcript, instead of spending extra continuation budget on an invalid state.",
+          "Other runs that end with assistant-tail terminal states but still have queued post-run work will no longer attempt useless continue cycles; only legal user/toolResult-tail continuations will proceed.",
+          "The accepted idle-stream retry behavior remains active for transient provider stalls, but its continuation now depends on an actually continuable transcript tail."
+        ],
+        "regression_risks": [
+          "If some productive flow currently relies on post-run work mutating state into a continuable form after _handlePostAgentRun returns but before agent.continue(), this stricter check could stop earlier; the risk is reduced because the check matches documented agent-core continue preconditions.",
+          "Lift may be limited if the main remaining failures are dominated by task reasoning rather than invalid post-run continuation churn."
+        ],
+        "targeted_checks": [
+          "agent-session",
+          "cli-smoke",
+          "Replay terminal-bench-adaptive-rejection-sampler repeat 1 and verify post-run logic no longer re-enters continue when the transcript tail is assistant after retry/compaction handling.",
+          "Replay a legal queued-follow-up path where the tail is user or toolResult and verify continuation still occurs."
+        ],
+        "analysis_tags": [
+          "coding-session",
+          "post-run-orchestration",
+          "continue-legality",
+          "within-task-contrast",
+          "default-path"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.4444444444444444,
+        "candidate_score": 0.26666666666666666,
+        "delta": -0.17777777777777776,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-regex-log",
+          "terminal-bench-sanitize-git-repo"
+        ],
+        "improved_tasks": [
+          "terminal-bench-cobol-modernization"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-regex-log",
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-tune-mjcf"
+        ]
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_no_improvement",
+        "baseline_score": 0.4444444444444444,
+        "candidate_score": 0.26666666666666666,
+        "delta": -0.17777777777777776,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "terminal-bench-regex-log",
+          "terminal-bench-sanitize-git-repo"
+        ],
+        "improved_tasks": [
+          "terminal-bench-cobol-modernization"
+        ],
+        "regressed_tasks": [
+          "terminal-bench-adaptive-rejection-sampler",
+          "terminal-bench-build-cython-ext",
+          "terminal-bench-qemu-alpine-ssh",
+          "terminal-bench-regex-log",
+          "terminal-bench-sanitize-git-repo",
+          "terminal-bench-tune-mjcf"
+        ],
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/tmp/rsibench-direct-meta-20260817T105156Z/runs/formal-terminal-gpt-5-4-meta-same-pi-skyinfer-8w-source-12-direct-g5-tr3-te3-20260817T134000Z/cells/terminal/gpt-5-4/pi/attempts/1/pi-source-evolution/controller/records/round-04"
+    },
+    {
+      "candidate_id": "meta-agent-smoke",
+      "status": "rejected",
+      "reason": "qualification_passed",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "meta-agent-smoke",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/stream-fn.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=meta-agent-smoke; failure_repeat=none; action=action_01 insert the required harmless qualification comment immediately before defaultStreamFn; verifier=controller qualification requires edit, protocol, build, and smoke proof; pass_repeat=none"
+        ],
+        "root_cause": "This non-scoring qualification run requires only a precise source-path edit to prove the recursive candidate editing and submission path; no task-performance root cause is in scope.",
+        "mechanism": "Insert exactly one harmless source comment immediately before the defaultStreamFn declaration in packages/agent/src/stream-fn.ts so the controller can verify the candidate produced a real owned source diff through the normal submission protocol.",
+        "evidence_basis": "runtime_failure",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The qualification task explicitly names packages/agent/src/stream-fn.ts under PI_SRC_AGENT_LOOP and requires the comment to appear immediately before defaultStreamFn. Editing that exact source location is the direct and sufficient way to satisfy the controller's smoke qualification.",
+        "predicted_fixes": [
+          "Controller qualification will detect the required source diff in packages/agent/src/stream-fn.ts and proceed to build and smoke validation for this recursive source-edit path."
+        ],
+        "regression_risks": [
+          "Negligible; the change is a comment-only edit in the required location."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke"
+        ],
+        "analysis_tags": [
+          "qualification",
+          "smoke",
+          "agent-loop",
+          "comment-only-required-edit"
+        ]
+      },
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": []
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/tmp/rsibench-direct-meta-20260817T105156Z/runs/formal-terminal-gpt-5-4-meta-same-pi-skyinfer-8w-source-12-direct-g5-tr3-te3-20260817T134000Z/cells/terminal/gpt-5-4/pi/attempts/1/pi-source-evolution/controller/records/meta-agent-smoke"
+    }
+  ],
+  "active_attempts_since_last_accept": [
+    "round-02",
+    "round-03",
+    "round-04",
+    "meta-agent-smoke"
+  ],
+  "prompt_policy": {
+    "performance_attempts": 0,
+    "performance_rejections": 0,
+    "blocked_after_no_lift": false,
+    "rejected_change_ids": [],
+    "required_action": "prompt_remains_eligible_with_causal_evidence"
+  }
+}

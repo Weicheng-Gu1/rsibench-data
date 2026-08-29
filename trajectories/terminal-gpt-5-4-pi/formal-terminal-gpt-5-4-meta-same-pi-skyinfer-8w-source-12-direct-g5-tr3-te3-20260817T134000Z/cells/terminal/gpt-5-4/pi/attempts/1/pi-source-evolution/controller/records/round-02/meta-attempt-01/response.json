@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Inspected the round-02 training index, evolution history, and raw failed/successful trajectories. A recurring failure pattern is wasted post-run continuation after an assistant error message or terminal assistant state, especially in long failed runs like adaptive-rejection-sampler repeat 1 and cobol-modernization repeat 0 where the model already emitted an error/final assistant but session orchestration still had a generic continuation path available. I made a small default-path guard in AgentSession so post-run continuation only happens when the live agent state can legally continue (last message is not assistant). This targets coding-session orchestration directly and avoids invalid or useless continue() attempts after retries/agent_end-extension queueing, while preserving the accepted idle-stream retry behavior already present in the same module.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "round-02-agent-session-safe-continue-guard",
+    "failure_evidence": [
+      "/app/pi-source-evidence/references/7d68abd478a7678c-training-opportunity-index.json",
+      "/app/pi-source-evidence/references/1ffdab79eedce8a6-evolution-history.json",
+      "task=terminal-bench-adaptive-rejection-sampler; failure_repeat=1; action=action_38 after a long failing run that already surfaced an assistant error/terminal state, session orchestration remained on the post-run continuation path instead of requiring a legally continuable non-assistant tail; verifier=trajectory consumed 1086804 tokens and still failed; pass_repeat=2",
+      "task=terminal-bench-cobol-modernization; failure_repeat=0; action=action_13 the run performed repeated reads and edits without converging, showing vulnerable session-level churn after terminal assistant states compared with the concise successful repeat; verifier=reward 0 with many repeated tool calls; pass_repeat=1"
+    ],
+    "root_cause": "AgentSession's post-run loop treated queued follow-up work as sufficient reason to continue without first verifying that the current agent state still satisfied agent-loop continue preconditions. When the last persisted message is an assistant message from an error or other terminal stop, continue() is invalid and any post-run continuation attempt is wasted or brittle.",
+    "mechanism": "Add a default-path guard in AgentSession that checks whether the current state can legally continue before both returning queued-continuation intent and before calling agent.continue(). This keeps retries and extension-queued post-run work on the normal path when the tail message is user/toolResult, but suppresses invalid continuation when the tail is assistant.",
+    "evidence_basis": "within_task_contrast",
+    "prior_attempt_disposition": "improve_accepted",
+    "why_this_component": "The failure happens inside coding-session post-run orchestration after provider/runtime output has already been converted into assistant messages. PI_SRC_CODING_SESSION owns the while-loop that decides whether to call agent.continue() again. Agent-loop already rejects assistant-tail continuation, so the safest high-leverage fix is to gate continuation earlier in AgentSession on the default RSIBench execution path.",
+    "predicted_fixes": [
+      "Runs that end a turn with an assistant error or other assistant-tail terminal state will stop cleanly instead of attempting or signaling an invalid continuation path.",
+      "Tasks with queued post-run work from extension hooks or retry cleanup will continue only when the transcript tail is legally continuable, reducing wasted churn in long failing trajectories.",
+      "The previously accepted idle-stream retry behavior remains active, but its follow-on continuation now respects actual transcript state before re-entering the agent loop."
+    ],
+    "regression_risks": [
+      "If some external integration implicitly relied on AgentSession attempting continue() even with an assistant-tail transcript, that flow will now stop earlier.",
+      "A queued extension follow-up added only after agent_end without appending a continuable user/custom/toolResult message will no longer trigger a useless continue cycle."
+    ],
+    "targeted_checks": [
+      "agent-session",
+      "cli-smoke",
+      "Replay terminal-bench-adaptive-rejection-sampler repeat 1 and verify post-run logic does not attempt continuation when the tail message remains assistant after an error.",
+      "Replay a passing queued-follow-up path and verify continuation still occurs when the tail message is user or toolResult."
+    ],
+    "analysis_tags": [
+      "coding-session",
+      "continue-guard",
+      "post-run-orchestration",
+      "within-task-contrast",
+      "default-path"
+    ]
+  }
+}
