@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "change_id": "round-04-general-spec-self-contained-verification",
+  "layer": "shared_resource",
+  "primary_module": "SHARED_RULES",
+  "compound_modules": [
+    "SHARED_SKILLS"
+  ],
+  "files": [
+    ".pi/skills/verify-work/SKILL.md",
+    "AGENTS.md"
+  ],
+  "requires_rebuild": false,
+  "failure_evidence": [
+    "task=terminal-bench-model-extraction-relu-logits; failure_repeat=0; action=action_04 wrote steal.py that hardcodes NUM_HIDDEN_GUESS=20 (read from forward.py) and validated correctness via `from forward import A1` privileged ground truth; verifier=test_stolen_matrix_matches re-ran the script against a fresh 30x10 network (np.random.seed(5)) and asserted Failed to match rows [0,1,2,4,11,12,15,17,18,19,21,22,28] -> reward 0.0; pass_repeat=none",
+    "task=terminal-bench-model-extraction-relu-logits; failure_repeat=1; action=same hardcoded-20 approach; verifier=stolen matrix has only 20 rows vs 30 true neurons -> reward 0.0; pass_repeat=none",
+    "task=terminal-bench-headless-terminal; failure_repeat=0; action=declared success after self-tests covering python/ctrl-C/ctrl-D only; verifier=test_send_interactive_command (vim) failed in pyte feed -> reward 0.0; pass_repeat=1 (29ed61e9f8c07747)",
+    "/app/pi-source-evidence/references/7e240c1fdc580c97-pi-mechanism-evidence.json",
+    "/app/pi-source-evidence/references/66ec497eefb2bdb4-training-failures.json",
+    "training_mean_reward=0.555556",
+    "failed_or_partial_trajectories=20"
+  ],
+  "root_cause": "The agent optimizes and self-verifies the specific instance visible in the sandbox rather than the general written specification. In model-extraction it inspected forward.py, hardcoded the observed neuron count (20) and input dim, and confirmed correctness by importing the true weights (`from forward import A1`); the grader re-runs the deliverable against a different, larger, hidden network (30x10, seed 5) where that count is wrong and the privileged ground truth does not exist, so the script fails deterministically across all three repeats. The same class appears in headless-terminal repeat 0, where the agent concluded success from a narrow happy-path self-test and missed the hidden interactive (vim) case.",
+  "mechanism": "Add durable, always-applicable decision policy to SHARED_RULES (AGENTS.md): solve the general spec not the visible instance; never hardcode constants inferred from inspecting the environment when the spec treats them as unknown/variable (detect at runtime from the allowed interface); ensure any deliverable script/module is self-contained and re-runnable in a fresh environment without importing privileged ground truth; and do not conclude success from a self-check that reads ground truth or only exercises the single available input. Reinforce the same procedure in the always-loaded SHARED_SKILLS verify-work skill so verification explicitly checks self-containment, absence of instance-hardcoding, and coverage beyond the happy path.",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "rollback_and_pivot",
+  "why_this_component": "The verify-work skill is loaded on every default-path Pi run (skills_loaded=['verify-work'] in the mechanism evidence) and AGENTS.md is the universal project rules surface; both are on the default RSIBench task-agent path (shared_module_activation verified for SHARED_RULES and SHARED_SKILLS). The causal defect is a missing general decision habit, not broken runtime execution: the agent had the correct extraction algorithm but applied instance-specific constants and privileged self-checks. The module guide directs missing universal policy to SHARED_RULES and reusable verification procedure to the loaded skill, and warns against choosing harness/runtime edits to avoid a rebuild; the twice-tried harness deadline mechanism (rounds 01/03) is falsified/inconclusive, so the highest-leverage supported intervention is guidance here rather than PI_SRC_HARNESS_RUNTIME.",
+  "predicted_fixes": [
+    "terminal-bench-model-extraction-relu-logits: the agent detects the neuron count at runtime instead of hardcoding 20 and stops validating against `from forward import A1`, producing a self-contained steal.py that recovers all rows of the hidden 30x10 network -> repeats flip to pass",
+    "terminal-bench-headless-terminal: verification beyond the happy path (interactive editor like vim) surfaces the redraw/feed edge case before the agent declares success, stabilizing the currently flaky repeat 0",
+    "General: reduces false 'success' declarations on tasks whose grader uses different or hidden inputs, raising mean training reward without touching runtime turn control"
+  ],
+  "regression_risks": [
+    "Guidance could prompt marginally more validation work on short tasks, costing a few turns; mitigated by keeping the rules concise and scoped to declaring success",
+    "On tasks where the sandbox instance genuinely equals the graded instance the extra generality is harmless but adds no benefit",
+    "No code path changes, so no build/runtime regression risk; clean build and CLI smoke pass"
+  ],
+  "targeted_checks": [
+    "resource-preflight",
+    "rule-load-smoke",
+    "skill-load-smoke",
+    "On terminal-bench-model-extraction-relu-logits, confirm the generated steal.py no longer hardcodes the neuron count nor imports forward.A1 for self-validation and that the stolen matrix matches the hidden 30x10 network; a pass flip corroborates, continued all-3 failure falsifies the causal claim"
+  ],
+  "analysis_tags": [
+    "general-spec-over-instance",
+    "no-instance-hardcoding",
+    "self-contained-deliverable",
+    "privileged-ground-truth-avoidance",
+    "verification-coverage",
+    "shared-rules",
+    "shared-skills",
+    "pivot-from-deadline-mechanism"
+  ]
+}
