@@ -1,0 +1,80 @@
+{
+  "session_path": "runs/_harbor_trials/largest-eigenval__xyXQPvn/agent/pi/sessions/2026-08-26T22-47-54-670Z_01a04042-302e-7976-b60b-a624bb5a3df9.jsonl",
+  "session_paths": [
+    "runs/_harbor_trials/largest-eigenval__xyXQPvn/agent/pi/sessions/2026-08-26T22-47-54-670Z_01a04042-302e-7976-b60b-a624bb5a3df9.jsonl"
+  ],
+  "extensions_loaded": [
+    ".pi/extensions/hooks/index.ts",
+    ".pi/extensions/mcp/index.ts"
+  ],
+  "skills_loaded": [
+    "verify-work"
+  ],
+  "custom_tools_registered": [],
+  "custom_tools_invoked": [],
+  "successful_custom_tools": [],
+  "successful_tool_calls": [],
+  "mcp_calls": 0,
+  "compaction_events": 0,
+  "before_compact_hooks": 0,
+  "compaction_policy_verified": false,
+  "memory_writes": [],
+  "memory_retrievals": [],
+  "memory_injections": [],
+  "memory_roundtrip_verified": false,
+  "load_errors": [],
+  "training_verifier": {
+    "summary": {
+      "tests": 3,
+      "passed": 0,
+      "failed": 3,
+      "skipped": 0,
+      "pending": 0,
+      "other": 0
+    },
+    "failures": [
+      {
+        "name": "test_outputs.py::test_eigen_pair",
+        "status": "failed",
+        "message": "The test failed in the call phase due to an assertion error",
+        "trace": "size = 10\n\n    @pytest.mark.parametrize(\"size\", MAT_SIZES)\n    def test_eigen_pair(size):\n        \"\"\"Verify the eigen pair is valid.\"\"\"\n        _np_random_seed(0)\n        A = _np_random_normal(size=(size, size)).astype(np.float64)\n        eigenval, eigenvec = find_dominant_eigenvalue_and_eigenvector(A)\n        # sanity eigen checks\n        assert not np.allclose(eigenvec, 0), \"eigenvector is zero\"\n        assert not np.isnan(eigenval), \"eigenvalue is NaN\"\n        assert not np.isinf(eigenval), \"eigenvalue is Inf\"\n        # assert eigen pair satisfies definition Ax = λx\n        # compute residual only for error message, not used for assert\n        absolute_residual = np.linalg.norm(A @ eigenvec - eigenval * eigenvec)\n        relative_residual = absolute_residual / np.linalg.norm(eigenvec)\n>       assert np.allclose(A @ eigenvec, eigenval * eigenvec), (\n            f\"Failed to satisfy eigenvalue equation Ax = λx for {A.shape}, \"\n            f\"absolute residual {absolute_residual:.6e}, \"\n            f\"relative residual {relative_residual:.6e}\"\n        )\nE       AssertionError: Failed to satisfy eigenvalue equation Ax = λx for (10, 10), absolute residual 3.643794e+00, relative residual 3.643794e+00\nE       assert False\nE        +  where False = <function allclose at 0x7ff5063137f0>((array([[ 1.76405235,  0.40015721,  0.97873798,  2.2408932 ,  1.86755799,\\n        -0.97727788,  0.95008842, -0.15135721...4507,  0.20827498,  0.97663904,  0.3563664 ,\\n         0.70657317,  0.01050002\n...[truncated 710 chars]"
+      },
+      {
+        "name": "test_outputs.py::test_dominance_eigenvalue",
+        "status": "failed",
+        "message": "The test failed in the call phase due to an assertion error",
+        "trace": "size = 10\n\n    @pytest.mark.parametrize(\"size\", MAT_SIZES)\n    def test_dominance_eigenvalue(size):\n        \"\"\"Test that eigenvalue (potentially complex) has the largest magnitude.\"\"\"\n        _np_random_seed(0)\n        A = _np_random_normal(size=(size, size)).astype(np.float64)\n        eigenval, _ = find_dominant_eigenvalue_and_eigenvector(A)\n        # computing the reference\n        all_eigenvals = _np_linalg_eigvals(A)\n        ref_max_eigenval = all_eigenvals[np.argmax(np.abs(all_eigenvals))]\n>       assert np.isclose(np.abs(eigenval), np.abs(ref_max_eigenval)), (\n            f\"|{eigenval}| is not the largest, reference |{ref_max_eigenval}|\"\n        )\nE       AssertionError: |(0.5023176854749262+4.4975775072922455e-10j)| is not the largest, reference |(-0.18843861813227158+3.373745777812059j)|\nE       assert np.False_\nE        +  where np.False_ = <function isclose at 0x7ff506313970>(np.float64(0.5023176854749262), np.float64(3.379004244760325))\nE        +    where <function isclose at 0x7ff506313970> = np.isclose\nE        +    and   np.float64(0.5023176854749262) = <ufunc 'absolute'>(np.complex128(0.5023176854749262+4.4975775072922455e-10j))\nE        +      where <ufunc 'absolute'> = np.abs\nE        +    and   np.float64(3.379004244760325) = <ufunc 'absolute'>(np.complex128(-0.18843861813227158+3.373745777812059j))\nE        +      where <ufunc 'absolute'> = np.abs\n\n/tests/test_outputs.py:79: AssertionError"
+      },
+      {
+        "name": "test_outputs.py::test_speedup",
+        "status": "failed",
+        "message": "The test failed in the call phase due to an assertion error",
+        "trace": "size = 10\n\n    @pytest.mark.parametrize(\"size\", MAT_SIZES)\n    def test_speedup(size):\n        \"\"\"Make sure new implementation is faster than reference.\"\"\"\n        _np_random_seed(0)\n        matrices = [\n            _np_random_normal(size=(size, size)).astype(np.float64) for _ in range(N)\n        ]\n    \n        with ProcessPoolExecutor(max_workers=1) as executor:\n            ref_future = executor.submit(\n                _time_function_isolated,\n                ref_solution,\n                matrices,\n            )\n            ref_dts = ref_future.result(timeout=30)\n            ref_dt = np.median(ref_dts).item() if ref_dts else float(\"inf\")\n            print(f\"Median time for {size}x{size} (ref): {ref_dt:.6f} seconds\")\n    \n            candidate_future = executor.submit(\n                _time_function_isolated,\n                find_dominant_eigenvalue_and_eigenvector,\n                matrices,\n            )\n            dts = candidate_future.result(timeout=30)\n            dt = np.median(dts).item() if dts else float(\"inf\")\n            print(f\"Median time for {size}x{size}: {dt:.6f} seconds\")\n    \n>       assert dt < ref_dt, f\"{dt:.6f} seconds/call > {ref_dt:.6f} seconds/call\"\nE       AssertionError: 0.000559 seconds/call > 0.000054 seconds/call\nE       assert 0.0005588829999965128 < 5.447350002896201e-05\n\n/tests/test_outputs.py:111: AssertionError"
+      }
+    ],
+    "stdout": "Collecting pytest==8.4.1\n  Downloading pytest-8.4.1-py3-none-any.whl.metadata (7.7 kB)\nCollecting pytest-json-ctrf==0.3.5\n  Downloading pytest_json_ctrf-0.3.5-py3-none-any.whl.metadata (3.3 kB)\nCollecting iniconfig>=1 (from pytest==8.4.1)\n  Downloading iniconfig-2.3.0-py3-none-any.whl.metadata (2.5 kB)\nCollecting packaging>=20 (from pytest==8.4.1)\n  Downloading packaging-26.3-py3-none-any.whl.metadata (3.5 kB)\nCollecting pluggy<2,>=1.5 (from pytest==8.4.1)\n  Downloading pluggy-1.6.0-py3-none-any.whl.metadata (4.8 kB)\nCollecting pygments>=2.7.2 (from pytest==8.4.1)\n  Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)\nDownloading pytest-8.4.1-py3-none-any.whl (365 kB)\nDownloading pytest_json_ctrf-0.3.5-py3-none-any.whl (6.8 kB)\nDownloading pluggy-1.6.0-py3-none-any.whl (20 kB)\nDownloading iniconfig-2.3.0-py3-none-any.whl (7.5 kB)\nDownloading packaging-26.3-py3-none-any.whl (129 kB)\nDownloading pygments-2.21.0-py3-none-any.whl (1.3 MB)\n   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 6.2 MB/s  0:00:00\nInstalling collected packages: pygments, pluggy, packaging, iniconfig, pytest, pytest-json-ctrf\n\nSuccessfully installed iniconfig-2.3.0 packaging-26.3 pluggy-1.6.0 pygments-2.21.0 pytest-8.4.1 pytest-json-ctrf-0.3.5\nWARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.2 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip\n============================= test session starts ==============================\nplatform linux -- Python 3.13.7, pytest-8.4.1, pluggy-1.6.0\nrootdir: /tests\nplugins: json-ctrf-0.3.5\ncollected 27 items\n\n../tests/test_outputs.py F..F...FFF..F...FFFFFFFFFFF                     [100%]\n\n=================================== FAILURES ===================================\n______________________________ test_eigen_pair[2] ______________________________\n\nsize = 2\n\n    @pytest.mark.parametrize(\"size\", MAT_SIZES)\n    def test_eigen_pair(size):\n        \"\"\"Verify the eigen pair is valid.\"\"\"\n        _np_random_seed(0)\n        A = _np_random_normal(size=(size, size)).astype(np.float64)\n        eigenval, eigenvec = find_dominant_eigenvalue_and_eigenvector(A)\n        # sanity eigen checks\n        assert not np.allclose(eigenvec, 0), \"eigenvector is zero\"\n        assert not np.isnan(eigenval), \"eigenvalue is NaN\"\n        assert not np.isinf(eigenval), \"eigenvalue is Inf\"\n        # assert eigen pair satisfies definition Ax = λx\n        # compute residual only for error message, not used for assert\n        absolute_residual = np.linalg.norm(A @ eigenvec - eigenval * eigenvec)\n        relative_residual = absolute_residual / np.linalg.norm(eigenvec)\n>       assert np.allclose(A @ eigenvec, eigenval * eigenvec), (\n            f\"Failed to satisfy eigenvalue equation Ax = λx for {A.shape}, \"\n            f\"absolute residual {absolute_residual:.6e}, \"\n            f\"relative residual {relative_residual:.6e}\"\n        )\nE       AssertionError: Failed to satisfy eigenvalue equation Ax = λx for (2, 2), absolute residual 8.990536e-01, relative residual 8.990536e-01\nE       assert False\nE        +  where False = <function allclose at 0x7ff5063137f0>((array([[1.76405235, 0.40015721],\\n       [0.97873798, 2.2408932 ]]) @ array([ 0.9923115 +5.52116766e-11j, -0.12376543+2.01890725e-11j])), (np.complex128(1.6020090923308123-1.5544814141445832e-11j) * array([ 0.9923115 +5.52116766e-11j, -0.12376543+2.01890725e-11j])))\nE        +    where <function allclose at 0x7ff5063137f0> = np.allclose\n\n/tests/test_outputs.py:63: AssertionError\n______________________________ test_eigen_pair[5] ______________________________\n\nsize = 5\n\n    @pytest.mark.parametrize(\"size\", MAT_SIZES)\n    def test_eigen_pair(size):\n        \"\"\"Verify the eigen pair is valid.\"\"\"\n        _np_random_seed(0)\n        A = _np_random_normal(size=(size, size)).astype(np.float64)\n        eigenval, eigenvec = find_dominant_eigenvalue_and_eigenvector(A)\n        # sanity eigen checks\n        assert not np.allclose(eigenvec, 0), \"eigenvector is zero\"\n        assert not np.isnan(eigenval), \"eigenvalue is NaN\"\n        assert not np.isinf(eigenval), \"eigenvalue is Inf\"\n        # assert eigen pair satisfies definition Ax = λx\n        # compute residual only for error message, not used for assert\n        absolute_residual = np.linalg.norm(A @ eigenvec - eigenval * eigenvec)\n        relative_residual = absolute_residual / np.linalg.norm(eigenvec)\n>       assert np.allclose(A @ eigenvec, eigenval * eigenvec), (\n            f\"Failed to satisfy eigenvalue equation Ax = λx for {A.shape}, \"\n            f\"absolute residual {absolute_residual:.6e}, \"\n            f\"relative residual {relative_residual:.6e}\"\n        )\nE       AssertionError: Failed to satisfy eigenvalue equation Ax = λx for (5, 5), absolute residual 1.713487e+00, relative residual 1.713487e+00\nE       assert False\nE        +  where False = <function allclose at 0x7ff5063137f0>((array([[ 1.76405235,  0.40015721,  0.97873798,  2.2408932 ,  1.86755799],\\n       [-0.97727788,  0.95008842, -0.1513572...907, -0.20515826,  0.3130677 , -0.85409574],\\n       [-2.55298982,  0.6536186 ,  0.8644362 , -0.74216502,  2.26975462]]) @ array([ 0.62017748-7.50005787e-11j,  0.17542318+2.03052363e-11j,\\n        0.31828107-1.90779914e-11j, -0.09377399+3.55580068e-12j,\\n        0.688847  +2.51436372e-11j])), (np.complex128(2.1517986798986155+3.3909511911581865e-10j) * array([ 0.62017748-7.50005787e-11j,  0.17542318+2.03052363e-11j,\\n        0.31828107-1.90779914e-11j, -0.09377399+3.55580068e-12j,\\n        0.688847  +2.51436372e-11j])))\nE        +    where <function allclose at 0x7ff5063137f0> = np.allclose\n\n/tests/test_outputs.py:63: AssertionError\n__________\n...[truncated 27251 chars]"
+  },
+  "agent_failure": {
+    "category": "context_or_agent_runtime",
+    "detail": "harbor agent failure: AgentTimeoutError: Agent execution timed out after 900.0 seconds"
+  },
+  "shared_module_activation": {
+    "agent": "pi",
+    "harness_sha256": "5414b707838df8288d470f90593ab9935831ca43c01354ce52d9260ace08207f",
+    "module_sha256": {
+      "SHARED_PROMPT": "3cb86adf6b9c15644ec488db78952b377bf4bebeb994795bdd0a9854f371d34a",
+      "SHARED_RULES": "c27e04590e59476ecc9cdf4f6eabb02106006f89272db9232a62906500d0548d",
+      "SHARED_SKILLS": "a01947a481f9b57390f438b7a67cddfa3ffa322c9acf4fbe1a46997006f7db2b",
+      "SHARED_HOOKS": "5d4fdb01c6d904b137703eab92d2cc783b6f287cde7f7c58c76c6d92873529cb",
+      "SHARED_MCP": "dce23923dbe800b2989ec236f7c927c2a174175fe2c51cc83c25095435a6455d",
+      "SHARED_WORKFLOW": "cbc687fd6e34a05963f67d31d47a3a21296c7de778824e5a103815f03eb32c07"
+    },
+    "verified": true
+  },
+  "pi_source_runtime": {
+    "source_commit": "dcf773e26f0db9b44ed17099309d2c1b098120e7",
+    "generation": 0,
+    "bundle_manifest_sha256": "c8d21487ec443270e1d9c5a46415a06a842b43ef873cadbddf56689bac342f70",
+    "verified": true
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "change_id": "round-04-deadline-turn-budget-loop",
+  "failure_evidence": [
+    "task=headless-terminal; failure_repeat=0; action=agent implemented HeadlessTerminal using pty with start() method but verifier tests called send_keystrokes() without start(); verifier=test_outputs.py failed (RuntimeError: HeadlessTerminal not started); pass_repeat=2",
+    "task=headless-terminal; failure_repeat=1; action=agent implemented PTY-based HeadlessTerminal with struct import bug causing NameError; verifier=test_outputs.py failed (7 tests, 2 passed); pass_repeat=2",
+    "task=configure-git-webserver; failure_repeat=0; action=agent took 81 turns over 893s debugging git/nginx/hook configuration without producing accepted output; verifier=score 0.0 (test_hello_html_exists failed); pass_repeat=1,2",
+    "task=largest-eigenval; failure_repeat=0; action=agent ran 26 turns before timeout at 747s; verifier=AgentTimeoutError; pass_repeat=2",
+    "task=largest-eigenval; failure_repeat=1; action=agent ran 30 turns before timeout at 880s; verifier=AgentTimeoutError; pass_repeat=2",
+    "task=adaptive-rejection-sampler; failure_repeat=1; action=agent ran only 8 turns before timeout at 657s; verifier=AgentTimeoutError; pass_repeat=0,2",
+    "training_mean_reward=0.311111; failed_or_partial_trajectories=37; all_training_trajectories=45"
+  ],
+  "root_cause": "The agent loop has no built-in mechanism to detect an approaching external deadline or enforce a turn budget. When the harbor evaluator kills the agent at the 900s timeout boundary, all accumulated work is lost rather than preserved as a partial transcript that the verifier could still evaluate. The shouldStopAfterTurn callback exists on AgentLoopConfig but no built-in limit enforces a graceful stop before the external timeout, and no caller currently wires a deadline check through it.",
+  "mechanism": "Add optional deadlineMs (epoch timestamp) and maxTurns (integer) fields to AgentLoopConfig in types.ts. Add a turn counter in the runLoop function of agent-loop.ts that increments after each assistant response. Before each new provider request, call the new limitsExceeded helper which checks whether Date.now() >= deadlineMs or turnCount >= maxTurns. If either limit is reached, emit agent_end with the accumulated newMessages and return without starting another LLM call. Both fields are optional (undefined = no limit), so existing callers continue with identical behavior. The check runs after turn_start emission and before any pending-message processing, giving the loop a chance to exit gracefully before making another expensive provider request. The Agent class in agent.ts exposes deadlineMs and maxTurns as public properties and passes them through createLoopConfig.",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "new_direction",
+  "why_this_component": "The agent loop (agent-loop.ts) is the core turn-cycling mechanism that controls when the agent stops, how tool-call batches are processed, and how cancellation propagates. Every agent run flows through runLoop. It already has shouldStopAfterTurn but no built-in deadline or turn-budget awareness. Adding these directly to AgentLoopConfig makes the loop deadline-aware without requiring harness changes — though the harness can later pass the deadline for tighter integration. This is the lowest-level, most general place to add stopping limits; no other module touches turn progression at this granularity.",
+  "predicted_fixes": [
+    "Harneses that set deadlineMs will cause the agent loop to stop gracefully before the 900s harbor timeout, emitting agent_end with accumulated messages instead of losing all work to AgentTimeoutError",
+    "Agents with maxTurns set will stop after a bounded number of assistant turns rather than continuing indefinitely, preventing runaway sessions that exhaust the time budget",
+    "headless-terminal failing repetitions that produce correct implementations will have their partial progress preserved for the verifier",
+    "largest-eigenval: the passing repeat barely completed in 890s; a deadlineMs set with 30s safety margin would let agents stop gracefully with accumulated partial results",
+    "configure-git-webserver: the failing repeat with 81 turns would stop at a reasonable turn budget instead of being killed mid-exploration"
+  ],
+  "regression_risks": [
+    "If neither deadlineMs nor maxTurns is set (both undefined), the loop behaves identically to before — zero regression risk for existing callers",
+    "If a deadline is set too aggressively (e.g., very short remaining budget), the agent may stop before completing useful work, potentially lowering scores on tasks that would otherwise succeed within the time limit",
+    "If maxTurns is set too low, the agent may produce insufficient turns to complete a task; this is a consumer configuration concern, not a loop defect"
+  ],
+  "targeted_checks": [
+    "agent-loop",
+    "cancel-error-smoke",
+    "agent-harness"
+  ],
+  "analysis_tags": [
+    "deadline-awareness",
+    "turn-budget",
+    "agent-loop",
+    "graceful-degradation",
+    "timeout-resilience",
+    "general-mechanism"
+  ]
+}

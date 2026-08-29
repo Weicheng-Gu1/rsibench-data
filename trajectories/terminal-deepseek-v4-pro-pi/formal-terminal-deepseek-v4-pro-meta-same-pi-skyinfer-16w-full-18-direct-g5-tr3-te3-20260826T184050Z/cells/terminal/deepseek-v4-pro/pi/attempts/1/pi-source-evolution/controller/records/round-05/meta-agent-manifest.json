@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "change_id": "round-05-deadline-turn-budget",
+  "failure_evidence": [
+    "task=largest-eigenval; failure_repeat=0,1; action=agent ran 26-30 turns before timing out at 900s without converging; verifier=AgentTimeoutError; pass_repeat=2",
+    "task=qemu-alpine-ssh; failure_repeat=0,1; action=agent ran 37-48 turns before timing out at 900s; verifier=AgentTimeoutError; pass_repeat=2",
+    "task=configure-git-webserver; failure_repeat=0; action=agent ran 81 turns over 893s before timeout without producing accepted output; verifier=score 0.0; pass_repeat=1,2",
+    "training_mean_reward=0.311111; failed_or_partial_trajectories=37; all_training_trajectories=45"
+  ],
+  "root_cause": "The agent loop has no built-in mechanism to detect an approaching external deadline or enforce a turn budget. When the harbor evaluator kills the agent at the 900s timeout boundary, all accumulated work is lost rather than preserved as a partial transcript that the verifier could still evaluate. The shouldStopAfterTurn callback exists on AgentLoopConfig but is a per-turn policy hook that requires the consumer to implement stop logic — no built-in limit enforces graceful stop before the external timeout, and no caller currently wires a deadline check through it.",
+  "mechanism": "Add optional deadlineMs (epoch millisecond timestamp) and maxTurns (integer) fields to AgentLoopConfig in types.ts. Add a turn counter turnCount that increments after each assistant response completes in the runLoop function of agent-loop.ts. Before each new provider request, check whether Date.now() >= deadlineMs or turnCount >= maxTurns. If either limit is reached, emit agent_end with the accumulated newMessages and return without starting another LLM call. Both fields are optional (undefined = no limit), so existing callers continue with identical behavior. The check runs after any pending steering messages have been processed and before streamAssistantResponse is called, giving the loop a chance to exit gracefully before making another expensive provider request.",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "new_direction",
+  "why_this_component": "The agent loop (agent-loop.ts) is the core turn-cycling mechanism that controls when the agent stops, how tool-call batches are processed, and how cancellation propagates. Every agent run flows through runLoop. It already has shouldStopAfterTurn but no built-in deadline or turn-budget awareness. Adding these directly to AgentLoopConfig makes the loop deadline-aware without requiring harness changes — though the harness can later pass the deadline for tighter integration. This is the lowest-level, most general place to add stopping limits; no other module touches turn progression at this granularity.",
+  "predicted_fixes": [
+    "Harnesses that set deadlineMs will cause the agent loop to stop gracefully before the 900s harbor timeout, emitting agent_end with accumulated messages instead of losing all work to AgentTimeoutError",
+    "Agents with maxTurns set will stop after a bounded number of assistant turns rather than continuing indefinitely, preventing runaway sessions that exhaust the time budget",
+    "largest-eigenval: a harness-provided deadlineMs with 30s safety margin would let agents complete 40+ turns and stop with accumulated results, matching the passing repeat's behavior",
+    "qemu-alpine-ssh: the passing repeat completed 65 turns in 859s; a deadlineMs would let other repeats produce partial results before the harbor kills them",
+    "configure-git-webserver: the failing repeat ran 81 turns in 893s; a maxTurns or deadlineMs would bound the exploration and produce a partial config for the verifier"
+  ],
+  "regression_risks": [
+    "If neither deadlineMs nor maxTurns is set (both undefined), the loop behaves identically to before — zero regression risk for existing callers",
+    "If a deadline is set too aggressively (very short remaining budget), the agent may stop before completing useful work, potentially lowering scores on tasks that would otherwise succeed within the time limit",
+    "If maxTurns is set too low, the agent may produce insufficient turns to complete a task; this is a consumer configuration concern, not a loop defect"
+  ],
+  "targeted_checks": [
+    "agent-loop",
+    "cancel-error-smoke"
+  ],
+  "analysis_tags": [
+    "deadline-awareness",
+    "turn-budget",
+    "agent-loop",
+    "graceful-degradation",
+    "timeout-resilience",
+    "general-mechanism",
+    "deterministic-executable"
+  ]
+}

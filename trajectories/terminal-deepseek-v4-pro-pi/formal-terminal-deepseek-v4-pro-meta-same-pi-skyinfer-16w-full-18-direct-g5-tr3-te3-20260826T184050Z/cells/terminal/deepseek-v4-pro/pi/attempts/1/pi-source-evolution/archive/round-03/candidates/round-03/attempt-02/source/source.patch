@@ -1,0 +1,89 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 3a12506..c79d3ce 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -163,6 +163,7 @@ async function runLoop(
+ 	let currentContext = initialContext;
+ 	let config = initialConfig;
+ 	let firstTurn = true;
++	let turnCount = 0;
+ 	// Check for steering messages at start (user may have typed while waiting)
+ 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
+ 
+@@ -178,6 +179,12 @@ async function runLoop(
+ 				firstTurn = false;
+ 			}
+ 
++			// Check approaching limits before starting another provider request
++			if (shouldStopDueToLimits(config, turnCount)) {
++				await emit({ type: "agent_end", messages: newMessages });
++				return;
++			}
++
+ 			// Process pending messages (inject before next assistant response)
+ 			if (pendingMessages.length > 0) {
+ 				for (const message of pendingMessages) {
+@@ -192,6 +199,7 @@ async function runLoop(
+ 			// Stream assistant response
+ 			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
+ 			newMessages.push(message);
++			turnCount++;
+ 
+ 			if (message.stopReason === "error" || message.stopReason === "aborted") {
+ 				await emit({ type: "turn_end", message, toolResults: [] });
+@@ -790,3 +798,18 @@ async function emitToolResultMessage(toolResultMessage: ToolResultMessage, emit:
+ 	await emit({ type: "message_start", message: toolResultMessage });
+ 	await emit({ type: "message_end", message: toolResultMessage });
+ }
++
++/**
++ * Check whether the loop should stop before starting another provider request
++ * because a turn budget or deadline has been reached. This is checked after every
++ * turn and before any new LLM call.
++ */
++function shouldStopDueToLimits(config: AgentLoopConfig, turnCount: number): boolean {
++	if (config.maxTurns !== undefined && turnCount >= config.maxTurns) {
++		return true;
++	}
++	if (config.deadlineMs !== undefined && Date.now() >= config.deadlineMs) {
++		return true;
++	}
++	return false;
++}
+diff --git a/packages/agent/src/types.ts b/packages/agent/src/types.ts
+index 52f3489..6d117df 100644
+--- a/packages/agent/src/types.ts
++++ b/packages/agent/src/types.ts
+@@ -204,6 +204,32 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
+ 	 */
+ 	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+ 
++	/**
++	 * Absolute deadline (epoch ms) after which the loop should stop before starting
++	 * another LLM call. When set and `Date.now() >= deadlineMs`, the loop emits
++	 * `agent_end` with accumulated messages and exits gracefully instead of risking
++	 * an external timeout that would discard all work.
++	 *
++	 * The check runs after every turn and before every new provider request.
++	 * A safety margin of ~30s is recommended so the agent has time to emit
++	 * `agent_end` and flush session writes before the external deadline.
++	 *
++	 * Optional; when omitted the loop runs until `shouldStopAfterTurn` or queue
++	 * exhaustion.
++	 */
++	deadlineMs?: number;
++
++	/**
++	 * Maximum number of assistant turns (LLM calls) before the loop stops.
++	 * Each turn is one assistant response with any tool-call batch.
++	 * When the turn counter reaches `maxTurns`, the loop emits `agent_end`
++	 * and exits without starting another provider request.
++	 *
++	 * Optional; when omitted the loop runs until `shouldStopAfterTurn` or queue
++	 * exhaustion.
++	 */
++	maxTurns?: number;
++
+ 	/**
+ 	 * Called after each turn fully completes and `turn_end` has been emitted.
+ 	 *
