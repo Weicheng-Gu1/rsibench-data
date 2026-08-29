@@ -1,0 +1,83 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 3a12506..98cde95 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -24,6 +24,42 @@ import type {
+ 
+ export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
+ 
++/**
++ * Maximum number of times a single agent run will nudge the model after a
++ * degenerate empty assistant response before giving up. Bounded to avoid
++ * infinite loops when the provider keeps returning nothing.
++ */
++const MAX_EMPTY_RESPONSE_RECOVERIES = 3;
++
++/**
++ * A terminal `stop` assistant message that carries no tool calls and no textual
++ * or thinking content is not a real task completion. It is typically produced
++ * after a truncated or transient provider stream (e.g. "stream ended before
++ * message_stop"). Detect it so the loop can nudge the model to continue instead
++ * of silently ending the run without attempting the task.
++ */
++function isEmptyAssistantResponse(message: AssistantMessage): boolean {
++	for (const block of message.content) {
++		if (block.type === "toolCall") return false;
++		if (block.type === "text" && block.text.trim() !== "") return false;
++		if (block.type === "thinking" && block.thinking.trim() !== "") return false;
++	}
++	return true;
++}
++
++function createEmptyResponseNudge(): AgentMessage {
++	return {
++		role: "user",
++		content: [
++			{
++				type: "text",
++				text: "Your previous response was empty. Continue working on the task: use the available tools to make progress, and only stop once the task is fully complete.",
++			},
++		],
++		timestamp: Date.now(),
++	};
++}
++
+ /**
+  * Start an agent loop with a new prompt message.
+  * The prompt is added to the context and events are emitted for it.
+@@ -163,6 +199,7 @@ async function runLoop(
+ 	let currentContext = initialContext;
+ 	let config = initialConfig;
+ 	let firstTurn = true;
++	let emptyResponseRecoveries = 0;
+ 	// Check for steering messages at start (user may have typed while waiting)
+ 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
+ 
+@@ -257,6 +294,27 @@ async function runLoop(
+ 			}
+ 
+ 			pendingMessages = (await config.getSteeringMessages?.()) || [];
++
++			// Recover from a degenerate empty assistant response. A normal `stop`
++			// with no tool calls and no textual/thinking content means the model
++			// produced nothing, so ending here would waste the entire run without
++			// attempting the task. Nudge it to continue, bounded to avoid loops.
++			if (
++				toolCalls.length === 0 &&
++				pendingMessages.length === 0 &&
++				emptyResponseRecoveries < MAX_EMPTY_RESPONSE_RECOVERIES &&
++				message.stopReason === "stop" &&
++				isEmptyAssistantResponse(message)
++			) {
++				emptyResponseRecoveries++;
++				// Drop the empty assistant turn from the working context so the next
++				// provider request does not carry an empty assistant message (which
++				// some providers reject).
++				if (currentContext.messages[currentContext.messages.length - 1] === message) {
++					currentContext.messages.pop();
++				}
++				pendingMessages = [createEmptyResponseNudge()];
++			}
+ 		}
+ 
+ 		// Agent would stop here. Check for follow-up messages.

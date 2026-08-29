@@ -1,0 +1,101 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 98cde95..2e1749c 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -31,6 +31,58 @@ export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
+  */
+ const MAX_EMPTY_RESPONSE_RECOVERIES = 3;
+ 
++/**
++ * Default wall-clock budget, in milliseconds, that a single agent run is
++ * expected to fit inside. RSIBench-style harnesses kill the agent process with
++ * an AgentTimeoutError once their own deadline elapses, which turns an
++ * in-progress task into a hard reward-0 failure with no chance to persist a
++ * best-effort answer. This default is deliberately generous and can be
++ * overridden (or disabled with 0) via the PI_AGENT_TIME_BUDGET_MS env var.
++ */
++const DEFAULT_AGENT_TIME_BUDGET_MS = 900_000;
++
++/**
++ * Fraction of the time budget after which the loop injects a one-time
++ * finalization nudge. Chosen so the nudge fires late enough not to disturb
++ * fast tasks but early enough to leave time to write required outputs before an
++ * external deadline terminates the run.
++ */
++const DEADLINE_NUDGE_FRACTION = 0.8;
++
++/**
++ * Resolve the agent time budget in milliseconds. Returns 0 when the mechanism
++ * is explicitly disabled (non-positive override) so callers can skip it.
++ */
++function resolveAgentTimeBudgetMs(): number {
++	const raw = typeof process !== "undefined" ? process.env?.PI_AGENT_TIME_BUDGET_MS : undefined;
++	if (raw !== undefined && raw !== "") {
++		const parsed = Number.parseInt(raw, 10);
++		if (Number.isFinite(parsed)) {
++			return parsed > 0 ? parsed : 0;
++		}
++	}
++	return DEFAULT_AGENT_TIME_BUDGET_MS;
++}
++
++/**
++ * A one-time nudge injected when the run is close to its time budget while the
++ * model is still actively issuing tool calls. It steers the model to persist a
++ * best-effort result to disk before an external deadline kills the run, instead
++ * of exploring/refining indefinitely and being terminated with nothing saved.
++ */
++function createDeadlineFinalizationNudge(): AgentMessage {
++	return {
++		role: "user",
++		content: [
++			{
++				type: "text",
++				text: "You are approaching the time budget for this task and may be stopped soon. If you already have a working solution or a reasonable best-effort answer, make sure every required output file is written to disk now and any necessary commands have been run, before doing anything else. Prioritize producing a complete, saved result over further exploration or refinement; you can keep verifying afterward only if time remains.",
++			},
++		],
++		timestamp: Date.now(),
++	};
++}
++
+ /**
+  * A terminal `stop` assistant message that carries no tool calls and no textual
+  * or thinking content is not a real task completion. It is typically produced
+@@ -200,6 +252,13 @@ async function runLoop(
+ 	let config = initialConfig;
+ 	let firstTurn = true;
+ 	let emptyResponseRecoveries = 0;
++	// Wall-clock deadline awareness: fire a single finalization nudge once the run
++	// nears its time budget, so the model persists a best-effort result before an
++	// external harness deadline terminates it with nothing saved.
++	const loopStartTime = Date.now();
++	const agentTimeBudgetMs = resolveAgentTimeBudgetMs();
++	const deadlineNudgeThresholdMs = agentTimeBudgetMs > 0 ? agentTimeBudgetMs * DEADLINE_NUDGE_FRACTION : 0;
++	let deadlineNudgeSent = false;
+ 	// Check for steering messages at start (user may have typed while waiting)
+ 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
+ 
+@@ -315,6 +374,23 @@ async function runLoop(
+ 				}
+ 				pendingMessages = [createEmptyResponseNudge()];
+ 			}
++
++			// Deadline-aware finalization. When the run nears its time budget and the
++			// model is still actively working (issuing tool calls that will continue
++			// the loop), inject a one-time nudge to persist a best-effort result now.
++			// Only fires while continuing so it never forces an extra turn after a
++			// natural stop, and is bounded to a single injection per run.
++			if (
++				!deadlineNudgeSent &&
++				deadlineNudgeThresholdMs > 0 &&
++				hasMoreToolCalls &&
++				toolCalls.length > 0 &&
++				pendingMessages.length === 0 &&
++				Date.now() - loopStartTime >= deadlineNudgeThresholdMs
++			) {
++				deadlineNudgeSent = true;
++				pendingMessages = [createDeadlineFinalizationNudge()];
++			}
+ 		}
+ 
+ 		// Agent would stop here. Check for follow-up messages.

@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "change_id": "bash-default-timeout-hang-recovery-01",
+  "layer": "agent_core_source",
+  "primary_module": "PI_SRC_TOOL_RUNTIME",
+  "compound_modules": [],
+  "files": [
+    "packages/coding-agent/src/core/tools/bash.ts"
+  ],
+  "requires_rebuild": true,
+  "failure_evidence": [
+    "/app/pi-source-evidence/references/99ef1db034bb9450-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/e2f33d7834a779e2-training-failures.json",
+    "task=terminal-bench-qemu-alpine-ssh; failure_repeat=0; action=a single unbounded bash command blocks (assistant->toolResult execution gap ~418s) with no timeout while other bash calls stayed <=120s; verifier=harbor AgentTimeoutError after 900s, reward 0.0; pass_repeat=1,2 (max single command ~130s)",
+    "task=terminal-bench-build-cython-ext; failure_repeat=0; action=action_02/action_03 'git clone ... https://github.com/SPOCKnots/pyknotid.git' to an unreachable host with no timeout blocks ~394s (only 5 tool calls / 5605 tokens before the run dies); verifier=harbor AgentTimeoutError after 900s, reward 0.0; pass_repeat=none (repeats 1,2 avoided the hang by manually wrapping network fetches in `timeout 60/90/120`)",
+    "training_mean_reward=0.666667",
+    "failed_or_partial_trajectories=16"
+  ],
+  "root_cause": "packages/coding-agent/src/core/tools/bash.ts executes model commands with no default timeout: when the model omits `timeout`, the raw `undefined` is passed to ops.exec so the child process can block indefinitely. A single stuck command (unreachable network clone, command waiting on stdin, hung build) therefore consumes the whole agent execution budget and the run terminates with AgentTimeoutError, producing reward 0 with no chance for the model to observe the stall and recover.",
+  "mechanism": "Introduce DEFAULT_TIMEOUT_SECONDS=300 and apply it in the bash tool's execute path as `effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS`, which is passed to ops.exec (the local-shell backend already enforces the timeout by killing the process tree and throwing `timeout:<n>`). When the default limit fires, the timeout observation is augmented with guidance telling the model to re-run with an explicit larger `timeout` if the command legitimately needs more time, or to fix/bound the stuck command. Explicit user-supplied timeouts are unchanged; the schema and tool description are updated so the model's expectations match the new default. This turns a fatal run-level AgentTimeoutError into a bounded, recoverable, model-visible tool timeout.",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "new_direction",
+  "why_this_component": "The earliest causal break is in tool execution: the command runs unbounded and the run dies before the model can act. Module guidance for PI_SRC_TOOL_RUNTIME explicitly covers bash execution and timeout, and lists bash.ts as an owned file; the desired-capability list names deadline-aware turn control and tool recovery. The default consumer of the new default (ops.exec call) is in the same file and on the default RSIBench task-agent path (mechanism-evidence confirms native bash is the invoked tool, custom_tools_registered=[]). It is not an observation-presentation issue (the result was never produced) nor an agent-loop stopping issue (the loop never regains control).",
+  "predicted_fixes": [
+    "terminal-bench-qemu-alpine-ssh repeat_0: the ~418s hanging command is cut at 300s, returning a 'Command timed out after 300 seconds' observation with ~600s of budget left so the model can bound/replace the command instead of the run dying at 900s; raises pass@3 robustness for this task (already 2/3).",
+    "terminal-bench-build-cython-ext repeat_0: the ~394s git-clone hang is cut at 300s, giving the model the same recovery the passing repeats performed manually (switch to a mirror / add explicit timeout), moving the timeout repeat off a guaranteed 0.",
+    "Generally: any single command that blocks longer than 300s now yields a recoverable tool error instead of a fatal AgentTimeoutError, reducing timeout-caused zeros across the split."
+  ],
+  "regression_risks": [
+    "A legitimate single command that needs more than 300s would now time out; measured max legitimate single-command duration in passing training runs is 185s, so the 300s ceiling leaves >=115s headroom and no observed passing trajectory is threatened.",
+    "The augmented timeout guidance text lengthens the timeout error message slightly; the existing tools.test.ts assertion uses substring/regex matching ('Command timed out after 5 seconds' and the truncation footer), which still holds.",
+    "Interactive/long-lived foreground commands (e.g. dev servers) started without an explicit timeout would be capped at 300s; the model/user can pass an explicit larger timeout, and this path is not exercised by the RSIBench acceptance split."
+  ],
+  "targeted_checks": [
+    "tools",
+    "mutation-queue",
+    "re-run terminal-bench-qemu-alpine-ssh pass@3: if repeat_0 still dies with AgentTimeoutError and no 300s tool-timeout observation appears, the mechanism is falsified",
+    "re-run terminal-bench-build-cython-ext pass@3: confirm the repeat_0 git-clone hang now surfaces as a 300s tool timeout with remaining budget rather than a run-level timeout",
+    "re-run currently-passing timeout-adjacent tasks (adaptive-rejection-sampler, make-mips-interpreter, gcode-to-text, tune-mjcf) pass@3 to confirm no legitimate command (<=185s) is prematurely killed"
+  ],
+  "analysis_tags": [
+    "bash-default-timeout",
+    "tool-recovery",
+    "deadline-aware",
+    "hang-mitigation",
+    "agent-timeout",
+    "cross-task-pattern",
+    "tool-runtime"
+  ]
+}

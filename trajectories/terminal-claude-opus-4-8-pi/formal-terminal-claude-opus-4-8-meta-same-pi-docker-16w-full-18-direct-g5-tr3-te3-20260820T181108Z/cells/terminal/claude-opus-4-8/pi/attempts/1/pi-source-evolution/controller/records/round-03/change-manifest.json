@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "change_id": "agent-loop-deadline-finalization-nudge-01",
+  "layer": "agent_core_source",
+  "primary_module": "PI_SRC_AGENT_LOOP",
+  "compound_modules": [],
+  "files": [
+    "packages/agent/src/agent-loop.ts"
+  ],
+  "requires_rebuild": true,
+  "failure_evidence": [
+    "/app/pi-source-evidence/references/21546dcd5d39dcc9-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/8491ffb983cb0c55-training-failures.json",
+    "/app/pi-source-evidence/references/9b1d6caf1bc133c7-trajectory.jsonl",
+    "/app/pi-source-evidence/references/b744110c368c7402-pi-mechanism-evidence.json",
+    "task=terminal-bench-gcode-to-text; failure_repeat=0; action=action_~30 the model keeps re-running parse/OCR refinement scripts (identical 'num segments 38972 / z range' output recurs many times) and has candidate answer flag{gcod3_iz_ch4LLenGiNg} by ~t+600s but never writes it to the required output file; verifier=harbor AgentTimeoutError after 900s, reward 0.0; pass_repeat=none (all 3 repeats time out)",
+    "task=terminal-bench-qemu-alpine-ssh; failure_repeat=2; action=31 assistant turns of active bash work with no deadline awareness; run reaches ~906s still mid-task; verifier=AgentTimeoutError after 900s, reward 0.0; pass_repeat=0,1",
+    "task=terminal-bench-write-compressor; failure_repeat=2; action=active work plus provider stream stalls consume the budget with no finalization step; verifier=AgentTimeoutError after 900s, reward 0.0; pass_repeat=0,1",
+    "training_mean_reward=0.733333",
+    "failed_or_partial_trajectories=12"
+  ],
+  "root_cause": "packages/agent/src/agent-loop.ts runLoop has no awareness of the wall-clock budget that the RSIBench/harbor harness enforces (AgentTimeoutError after 900s). When the model works productively but does not converge in time — repeatedly refining/exploring instead of committing an answer — the harness kills the process mid-turn with reward 0 and no chance to persist a best-effort result. gcode-to-text demonstrably reached a strong candidate answer well before the deadline yet never wrote it to the required output file before being terminated, and this pattern also loses qemu-alpine-ssh repeat_2 and write-compressor repeat_2.",
+  "mechanism": "Add resolveAgentTimeBudgetMs() (default DEFAULT_AGENT_TIME_BUDGET_MS=900000, overridable/disable via PI_AGENT_TIME_BUDGET_MS) and a one-time createDeadlineFinalizationNudge(). In runLoop, capture loopStartTime and compute deadlineNudgeThresholdMs = budget * DEADLINE_NUDGE_FRACTION (0.8 -> 720s). After a turn, when the run has passed the threshold, the model is still actively issuing tool calls (hasMoreToolCalls && toolCalls.length>0), no other pending/steering message is queued, and the nudge has not yet been sent, inject exactly one user message telling the model to persist every required output file to disk now and prioritize a complete saved result over further exploration. The nudge is consumed by the same runLoop pendingMessages path (the identified default-path consumer), fires at most once, and only while the model would continue anyway, so it never forces an extra turn after a natural stop.",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "new_direction",
+  "why_this_component": "The earliest causal break is turn-progression/stopping control in the core agent loop: the loop keeps starting new turns until an external deadline kills it, with no mechanism to prompt finalization. Module guidance for PI_SRC_AGENT_LOOP covers stopping/turn progression and the developer guide explicitly names 'deadline-aware turn control' and 'adaptive stopping' as allowed source capability additions. round-01 already edited this same runLoop on the default RSIBench path with measured reward effect, and the nudge is consumed by the loop's own pendingMessages injection, so no other component is a better owner. It is not a bash-timeout issue (round-02 already bounds single commands; here no single command hangs) nor an observation/context fidelity issue.",
+  "predicted_fixes": [
+    "terminal-bench-gcode-to-text: at ~720s the model receives a finalization nudge while it already has a decoded candidate answer, prompting it to write the answer to the required output file before the 900s kill, moving repeats off a guaranteed 0/3.",
+    "terminal-bench-qemu-alpine-ssh repeat_2 and terminal-bench-write-compressor repeat_2: the near-deadline nudge prompts saving current progress/outputs before termination, improving pass@3 robustness on the timeout repeats.",
+    "Generally: runs that would otherwise be terminated mid-exploration now get one chance to persist a best-effort result, reducing timeout-caused zeros across the split."
+  ],
+  "regression_risks": [
+    "The nudge fires at 80% of a 900s budget (720s); all currently-passing training trajectories complete their agent phase well under this (max ~678s for adaptive-rejection/write-compressor passing repeats), so no currently-passing task receives the nudge except possibly long tool-heavy tasks (make-mips) whose duration is dominated by verification/build subprocess time — for those it is a single advisory message and pass@3 absorbs any minor perturbation.",
+    "The nudge only fires while the model is actively continuing (hasMoreToolCalls && toolCalls.length>0), so it never converts a natural successful stop into an extra turn.",
+    "If a harness sets no deadline, the default 900s budget still only injects a single harmless finalize reminder late in very long runs; PI_AGENT_TIME_BUDGET_MS=0 disables it entirely."
+  ],
+  "targeted_checks": [
+    "agent-loop",
+    "cancel-error-smoke",
+    "re-run terminal-bench-gcode-to-text pass@3: if runs still reach 900s AgentTimeoutError with no finalization nudge injected around ~720s and no output written, the mechanism is falsified",
+    "re-run currently-passing sub-720s tasks (adaptive-rejection-sampler, write-compressor repeats 0/1, tune-mjcf, regex-log) pass@3 to confirm no nudge fires and no regression",
+    "re-run terminal-bench-make-mips-interpreter pass@3 to confirm the single advisory nudge does not derail its multi-phase build"
+  ],
+  "analysis_tags": [
+    "deadline-aware",
+    "adaptive-stopping",
+    "finalization-nudge",
+    "agent-timeout",
+    "completion-state-detection",
+    "agent-loop-stopping",
+    "cross-task-pattern"
+  ]
+}
