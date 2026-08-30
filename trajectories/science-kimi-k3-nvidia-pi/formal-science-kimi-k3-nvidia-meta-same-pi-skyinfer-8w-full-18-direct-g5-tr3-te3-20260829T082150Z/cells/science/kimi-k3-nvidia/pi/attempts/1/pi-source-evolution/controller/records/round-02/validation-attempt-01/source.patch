@@ -1,0 +1,79 @@
+diff --git a/packages/agent/src/agent.ts b/packages/agent/src/agent.ts
+index 147edc8..a2fe09a 100644
+--- a/packages/agent/src/agent.ts
++++ b/packages/agent/src/agent.ts
+@@ -57,6 +57,20 @@ const DEFAULT_MODEL = {
+ 	maxTokens: 0,
+ } satisfies Model<any>;
+ 
++/**
++ * One-shot completion check injected as a follow-up user message when a run
++ * that produced file artifacts is about to stop. Task-general on purpose: it
++ * asks the model to re-verify its produced artifacts against the task's own
++ * stated requirements, without prescribing any task-specific strategy.
++ */
++const COMPLETION_CHECK_PROMPT = [
++	"Before you finish, run one final verification pass against the original task:",
++	"1. Re-read the task's output requirements and confirm every required artifact exists at the exact specified path and filename.",
++	"2. Re-open each artifact you produced (for example, print its header and a few rows) and confirm its structure (column names, row count, value ranges) matches what the task describes. When the task does not fully dictate a file's schema, prefer reusing the column names and structure of the provided input or reference files rather than inventing new names.",
++	"3. Confirm the contents are plausible and not degenerate (for example, no predictions collapsed to a constant, no unexpected NaN or empty values).",
++	"If you find a concrete discrepancy, fix it and re-run the affected steps. If everything checks out, state that the verification passed and finish.",
++].join("\n");
++
+ type MutableAgentState = Omit<AgentState, "isStreaming" | "streamingMessage" | "pendingToolCalls" | "errorMessage"> & {
+ 	isStreaming: boolean;
+ 	streamingMessage?: AgentMessage;
+@@ -433,6 +447,8 @@ export class Agent {
+ 
+ 	private createLoopConfig(options: { skipInitialSteeringPoll?: boolean } = {}): AgentLoopConfig {
+ 		let skipInitialSteeringPoll = options.skipInitialSteeringPoll === true;
++		// Completion check is offered at most once per run (one createLoopConfig call per prompt/continue cycle).
++		let completionCheckOffered = false;
+ 		return {
+ 			model: this._state.model,
+ 			reasoning: this._state.thinkingLevel === "off" ? undefined : this._state.thinkingLevel,
+@@ -464,10 +480,43 @@ export class Agent {
+ 				}
+ 				return this.steeringQueue.drain();
+ 			},
+-			getFollowUpMessages: async () => this.followUpQueue.drain(),
++			getFollowUpMessages: async () => {
++				const queued = this.followUpQueue.drain();
++				if (queued.length > 0) {
++					return queued;
++				}
++				if (!completionCheckOffered && this.hasProducedFileArtifact()) {
++					completionCheckOffered = true;
++					return [
++						{
++							role: "user",
++							content: [{ type: "text", text: COMPLETION_CHECK_PROMPT }],
++							timestamp: Date.now(),
++						},
++					];
++				}
++				return [];
++			},
+ 		};
+ 	}
+ 
++	/**
++	 * Completion gate trigger: the run is about to stop and the transcript
++	 * contains at least one successful file-producing tool call (write/edit).
++	 */
++	private hasProducedFileArtifact(): boolean {
++		for (const message of this._state.messages) {
++			if (
++				message.role === "toolResult" &&
++				!message.isError &&
++				(message.toolName === "write" || message.toolName === "edit")
++			) {
++				return true;
++			}
++		}
++		return false;
++	}
++
+ 	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>): Promise<void> {
+ 		if (this.activeRun) {
+ 			throw new Error("Agent is already processing.");

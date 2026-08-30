@@ -1,0 +1,21 @@
+diff --git a/packages/coding-agent/src/core/tools/bash.ts b/packages/coding-agent/src/core/tools/bash.ts
+index 1c245cb..98d6abf 100644
+--- a/packages/coding-agent/src/core/tools/bash.ts
++++ b/packages/coding-agent/src/core/tools/bash.ts
+@@ -448,7 +448,15 @@ export function createBashToolDefinition(
+ 
+ 				const snapshot = await finishOutput();
+ 				const { text: outputText, details } = formatOutput(snapshot);
+-				if (exitCode !== 0 && exitCode !== null) {
++				if (exitCode === null) {
++					// Node reports a null exit code when the process was terminated by a
++					// signal before it could exit normally (for example the OOM killer or
++					// an external kill during a long-running computation). Any captured
++					// output is truncated at the moment of the kill, so the command must
++					// not be presented to the model as completed successfully.
++					throw new Error(appendStatus(outputText, "Command was terminated by a signal before it could complete"));
++				}
++				if (exitCode !== 0) {
+ 					throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
+ 				}
+ 				return { content: [{ type: "text", text: outputText }], details };

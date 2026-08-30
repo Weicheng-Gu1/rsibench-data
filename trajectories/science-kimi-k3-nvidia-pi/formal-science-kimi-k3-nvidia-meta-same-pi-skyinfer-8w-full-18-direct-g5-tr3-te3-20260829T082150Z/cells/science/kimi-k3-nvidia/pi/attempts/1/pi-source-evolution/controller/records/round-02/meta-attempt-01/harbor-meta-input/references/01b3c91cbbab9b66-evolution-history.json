@@ -1,0 +1,190 @@
+{
+  "schema_version": 2,
+  "purpose": "Falsifiable cross-round memory without controller-defined semantic mechanism classes. The Meta-agent owns causal interpretation.",
+  "attempts": [
+    {
+      "candidate_id": "round-01",
+      "status": "rejected",
+      "reason": "direct_full_training_pass1_screen_rejected",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "pi-shared-prompt-sci-output-contract",
+        "layer": "shared_resource",
+        "primary_module": "SHARED_PROMPT",
+        "compound_modules": [],
+        "files": [
+          ".pi/APPEND_SYSTEM.md"
+        ],
+        "requires_rebuild": false,
+        "failure_evidence": [
+          "task=sab_15; failure_repeat=0; action=action_04 write aai_sol.py emitting pred_results/aai_preds.csv with invented columns Drug_ID,Drug,prob; verifier=reward 0, output schema diverges from provided test.csv target column Y despite good model (val AUC ~0.90); pass_repeat=2",
+          "task=sab_15; failure_repeat=1; action=action_03 write aai_sol.py with same invented 'prob' column schema; verifier=reward 0; pass_repeat=2 (pass repeat mirrored test.csv columns Drug_ID,Drug,Y after explicit deliberation)",
+          "task=sab_1; failure_repeat=2; action=action_03 write/train single neural net on imbalanced CT_TOX without balancing or ensembling; verifier=reward 0, predicted probabilities collapsed to near-constant (val AUC ~0.65/0.71); pass_repeat=0 (BalancingTransformer + 5-seed ensemble, val AUC 0.92)",
+          "task=sab_87; failure_repeat=0; action=action_02 write polynomial_fit.py using unweighted mean over the 37x49 lat/lon grid and a guessed CSV schema; verifier=reward 0 in all three repeats, each with a different invented schema and identical naive-mean values; pass_repeat=none",
+          "task=sab_40; failure_repeat=2; action=action_03 train single 80-tree RandomForest with roc_auc grid on dili_MD; verifier=reward 0 while structurally identical passes used different seed/grid choices, indicating fragile single-run modeling variance; pass_repeat=0"
+        ],
+        "root_cause": "The agent lacks general scientific-computing output-contract and modeling-robustness strategy: when the output schema is not fully dictated it invents column names instead of mirroring the provided reference data files (sab_15 fails vs pass repeat; sab_87 three different guessed schemas all fail), and it trains single unstable models on imbalanced/masked-label data without balancing, seed ensembling, or held-out threshold tuning (sab_1 fail vs pass contrast; sab_40 variance), and it substitutes ad-hoc computations for domain-standard methodology (unweighted spatial mean on a lat/lon climate grid in sab_87). Harness evidence shows no runtime defect: no compaction, timeouts, tool errors, or resource-loading failures in any of the 36 trajectories, so the defect is behavioral guidance, not runtime machinery.",
+        "mechanism": "Append a concise scientific-computing policy block to the Shared-6 resource .pi/APPEND_SYSTEM.md (SHARED_PROMPT), which packages/coding-agent/src/core/resource-loader.ts discoverAppendSystemPromptFile() resolves from <cwd>/.pi/APPEND_SYSTEM.md and appends to every system prompt on the default RSIBench execution path (confirmed in candidate source). The new guidance instructs the agent to (1) treat the output file as a strict contract: match task-specified path/name/columns exactly and otherwise mirror the schema of provided data files (reuse identifier and target/label column names, never invent names like 'prob'), then re-open the written file and verify the header; (2) for supervised prediction, check label balance and handle imbalance, fix seeds and prefer small seed-ensembles, tune decision thresholds on held-out training splits when test labels are masked, and check that scores are not collapsed; (3) use domain-standard methods and canonical library pipelines (e.g., cosine-latitude area weighting before spatially averaging gridded climate data) and inspect installed library source when behavior is unexpected; (4) sanity-check headline numbers for plausibility before finishing. Only the Shared-6 layer was changed; no TypeScript source was modified.",
+        "evidence_basis": "within_task_contrast",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The defect is missing general task strategy, not missing/misrouted runtime capability: all 36 trajectories show a healthy harness (no compaction, truncation, timeout, or tool-error pattern; resources load correctly), and the sab_15 pass/fail repeats differ only in a judgment call about output schema that the model explicitly deliberated. Per the layer boundary rules, missing task strategy maps to SHARED_PROMPT. .pi/APPEND_SYSTEM.md is unconditionally injected into the system prompt on the default path (verified in resource-loader.ts), unlike skills which require the model to open them, making it the most reliable surface for a universal policy. SHARED_PROMPT has no prior rejection in the evolution history (the single prior attempt was an unrelated smoke-qualification comment edit that was reverted), and the edit is confined to one layer as required.",
+        "predicted_fixes": [
+          "sab_15 (high confidence): schema-mirroring rule flips failing repeats 0 and 1, whose models were already good and whose only deviation from the passing repeat was the invented 'prob' column instead of mirroring test.csv's 'Y'",
+          "sab_1 (moderate confidence): imbalance-handling, seed-ensembling, and collapsed-score-check guidance targets the exact failure mode of repeat 2 (single unstable net, near-constant probabilities on imbalanced CT_TOX)",
+          "sab_87 (exploratory): schema-mirroring discipline plus the latitude area-weighting rule address the two observed deviations (three different guessed schemas; unweighted grid mean), though the hidden gold methodology cannot be confirmed from evidence"
+        ],
+        "regression_risks": [
+          "Currently passing tasks sab_29, sab_16, sab_101 and the passing sab_40/sab_1 repeats could shift behavior under the new guidance; mitigated by giving task-specified output requirements top precedence and keeping the guidance generic (no task names, no gold values, no specific hyperparameters)",
+          "Seed-ensembling guidance increases runtime on compute-heavy tasks; observed trajectory durations (mostly under 30 minutes) leave headroom, and the guidance says 'small' ensembles",
+          "Schema-mirroring could mislead if a hidden evaluator ever expects names differing from the input schema, but all observed passing repeats either followed task-specified columns or mirrored provided file schemas"
+        ],
+        "targeted_checks": [
+          "Frozen candidate checker passed: python3 /app/rsibench-source-candidate-check.py --agent pi --source /app/pi-source-candidate --output /logs/agent/candidate-self-check.json (passed=true; npm-ci-offline, build-offline, pi-cli-smoke all returncode 0; candidate_sha256=8db6c0a62dce0a1cc6ec72d225aa9f1d759bac820a8f634e8c324f765c2153dc)",
+          "git diff in /app/pi-source-candidate confirms the change set is confined to .pi/APPEND_SYSTEM.md (single Shared-6 layer; 6 insertions, no TypeScript source touched)",
+          "Verified in candidate source (resource-loader.ts discoverAppendSystemPromptFile) that .pi/APPEND_SYSTEM.md under the workspace cwd is loaded and appended to the system prompt on the default execution path",
+          "Re-read the edited file to confirm the original guidance line is preserved and the appended policy is well-formed Markdown text"
+        ],
+        "analysis_tags": [
+          "SHARED_PROMPT",
+          "within-task-contrast",
+          "output-schema-mirroring",
+          "output-contract",
+          "class-imbalance",
+          "seed-ensemble",
+          "domain-standard-methodology",
+          "system-prompt-policy"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.3888888888888889,
+        "candidate_score": 0.3333333333333333,
+        "delta": -0.05555555555555558,
+        "partial_candidate_score": 0.3333333333333333,
+        "partial_delta": -0.05555555555555558,
+        "fail_to_pass": [
+          "scienceagentbench-sab_18"
+        ],
+        "pass_to_fail": [
+          "scienceagentbench-sab_1",
+          "scienceagentbench-sab_15",
+          "scienceagentbench-sab_29"
+        ],
+        "improved_tasks": [
+          "scienceagentbench-sab_18",
+          "scienceagentbench-sab_40"
+        ],
+        "regressed_tasks": [
+          "scienceagentbench-sab_1",
+          "scienceagentbench-sab_15",
+          "scienceagentbench-sab_29"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_pass1_screen_rejected",
+        "baseline_score": 0.3888888888888889,
+        "candidate_score": 0.3333333333333333,
+        "delta": -0.05555555555555558,
+        "fail_to_pass": [
+          "scienceagentbench-sab_18"
+        ],
+        "pass_to_fail": [
+          "scienceagentbench-sab_1",
+          "scienceagentbench-sab_15",
+          "scienceagentbench-sab_29"
+        ],
+        "improved_tasks": [
+          "scienceagentbench-sab_18",
+          "scienceagentbench-sab_40"
+        ],
+        "regressed_tasks": [
+          "scienceagentbench-sab_1",
+          "scienceagentbench-sab_15",
+          "scienceagentbench-sab_29"
+        ],
+        "candidate_changed_files": [
+          ".pi/APPEND_SYSTEM.md"
+        ],
+        "validation_failure": null,
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/volume/ywan/yss/rsibench-master/runs/formal-science-kimi-k3-nvidia-meta-same-pi-skyinfer-8w-full-18-direct-g5-tr3-te3-20260829T082150Z/cells/science/kimi-k3-nvidia/pi/attempts/1/pi-source-evolution/controller/records/round-01"
+    },
+    {
+      "candidate_id": "meta-agent-smoke",
+      "status": "rejected",
+      "reason": "qualification_passed",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "meta-agent-smoke-attempt-1",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/stream-fn.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "controller qualification: prove edit, protocol, build, and smoke"
+        ],
+        "root_cause": "This is the controller-mandated smoke qualification candidate: its purpose is to prove the recursive edit-and-validation path (edit tool use, cumulative Git diff, frozen checker build/smoke, protocol submission) rather than to fix any training-task failure. The counterfactual-findings artifact is empty, so no task-level causal objective exists or is claimed.",
+        "mechanism": "Insert exactly one harmless source comment ('// RSIBench meta-agent smoke qualification edit. Do not change runtime behavior.') as the first line of packages/agent/src/stream-fn.ts, the designated PI_SRC_AGENT_LOOP qualification file. The comment is inert: it changes no token stream semantics, exports, or control flow, so default-path agent-loop behavior (streamFn fallback registration) is byte-for-byte identical at runtime. The frozen validator confirmed npm ci --offline, the full monorepo build:offline across all packages, and the pi CLI --version smoke all pass with the diff applied.",
+        "evidence_basis": "runtime_failure",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The controller's qualification task designates packages/agent/src/stream-fn.ts (owned by PI_SRC_AGENT_LOOP) as the required edit file and forbids any runtime behavior change; the edit was made exactly there and nowhere else, keeping the cumulative diff limited to the single required comment line.",
+        "predicted_fixes": [
+          "No downstream task performance change is predicted or claimed; the candidate exists solely to prove the edit/protocol/build/smoke path and is discarded after validation per the qualification contract."
+        ],
+        "regression_risks": [
+          "None: a leading comment line cannot alter compiled behavior; the frozen checker verified clean offline install, complete build, and CLI smoke."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "cancel-error-smoke"
+        ],
+        "analysis_tags": [
+          "smoke-qualification",
+          "protocol-validation",
+          "no-runtime-change"
+        ]
+      },
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "partial_candidate_score": null,
+        "partial_delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": [],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/volume/ywan/yss/rsibench-master/runs/formal-science-kimi-k3-nvidia-meta-same-pi-skyinfer-8w-full-18-direct-g5-tr3-te3-20260829T082150Z/cells/science/kimi-k3-nvidia/pi/attempts/1/pi-source-evolution/controller/records/meta-agent-smoke"
+    }
+  ],
+  "active_attempts_since_last_accept": [
+    "round-01",
+    "meta-agent-smoke"
+  ],
+  "prompt_policy": {
+    "performance_attempts": 1,
+    "performance_rejections": 1,
+    "blocked_after_no_lift": true,
+    "rejected_change_ids": [
+      "pi-shared-prompt-sci-output-contract"
+    ],
+    "required_action": "choose_a_non_prompt_physical_module"
+  }
+}

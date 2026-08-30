@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "All 36 TRAIN rollouts were inventoried and read (12 tasks x 3 repeats, mean reward 0.3889; mixed tasks sab_1 2/3, sab_15 1/3, sab_40 2/3; six zero-pass tasks; runtime clean everywhere: 0 compaction events, 0 load errors, no harmful truncation). The within-task contrast on sab_15 isolates a non-runtime, non-model-causality cause: failing repeats 0/1 finished with an invented 'prob' column instead of mirroring the provided test.csv schema Drug_ID,Drug,Y, and rep 0's final turn explicitly considered then skipped a verification step; passing rep 2 voluntarily re-deliberated the schema and mirrored test.csv. The identical skip-then-finish pattern appears in sab_87 rep 1 (final turn: 'Maybe verify quickly per skill? ... I'll do a quick sanity check and finish' then finished without it). Round-01's SHARED_PROMPT output-contract policy was rejected (net regression), so I chose the non-prompt physical module PI_SRC_AGENT_LOOP: the agent loop currently ends any run whose last assistant turn has no tool calls, with no completion-state detection for file-producing runs. The change wraps getFollowUpMessages in Agent.createLoopConfig (packages/agent/src/agent.ts, the exact default RSIBench path print-mode -> sdk.ts -> AgentSession -> Agent.prompt) so that when the loop would stop and the transcript contains a successful write/edit tool result, it injects exactly one task-general verification follow-up before allowing the stop. Frozen candidate check passed=true (npm-ci-offline, build-offline with tsgo typecheck of pi-agent-core, pi-cli-smoke 0.82.1); module tests agent-loop.test.ts + agent.test.ts 41/41 passed; harness suite 177/177 passed (2 sqlite suites fail only at import on Node 22, pre-existing on the clean tree, confirmed via git stash).",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "pi-agent-loop-completion-verify-gate",
+    "failure_evidence": [
+      "task=sab_15; failure_repeat=0,1; action=finished the run immediately after writing pred_results/aai_preds.csv with invented schema Drug_ID,Drug,prob instead of mirroring provided test.csv columns Drug_ID,Drug,Y; rep 0 at action_24 explicitly considered reading the verify-work skill and skipped it ('it's optional. The work is validated. I'll summarize.'); verifier=ScienceAgentBench output evaluation, reward 0 for reps 0 and 1; pass_repeat=2 (deliberated the output contract at length, chose to mirror test.csv as Drug_ID,Drug,Y, reward 1)",
+      "task=sab_1; failure_repeat=2; action=trained a single 150-epoch MultitaskClassifier and finished; CT_TOX predicted probabilities near-collapsed (range 0.01-0.16); verifier=ScienceAgentBench output evaluation, reward 0 for rep 2; pass_repeat=0,1 (5-seed ensembles with probability averaging plus BalancingTransformer, and voluntary end-of-run output validation, reward 1)",
+      "task=sab_87; failure_repeat=0,1,2; action=rep 1 final turn explicitly weighed a verification pass ('Maybe verify quickly per skill? The skill says use after implementation. The run succeeded and output looks sane.'), skipped it, and finished with its own ad-hoc CSV schema; verifier=ScienceAgentBench output evaluation, reward 0 for all repeats; pass_repeat=none (cited as supporting evidence of the skipped-verification stop pattern, not as a flip target)"
+    ],
+    "root_cause": "The default agent loop stops a run as soon as an assistant turn has no tool calls and the follow-up queue is empty; it has no completion-state detection for runs that produced file artifacts. In failing repeats the model considers and then skips an end-of-run verification (sab_15 rep 0 action_24; sab_87 rep 1 final turn) and settles with output-contract deviations (invented column names, degenerate prediction values), while passing repeats of the same tasks perform that verification voluntarily. The loop's unconditioned stop is the harness-level defect that lets the skipped verification become a scored failure.",
+    "mechanism": "In packages/agent/src/agent.ts (PI_SRC_AGENT_LOOP), Agent.createLoopConfig now wraps getFollowUpMessages: it first drains the real follow-up queue; if empty and the run is otherwise about to stop and the transcript contains at least one successful (non-error) write/edit tool result, it injects exactly one task-general user message directing a final verification pass (re-read the task's output requirements and confirm exact artifact paths/names; re-open produced files and compare schema, row count, and value ranges against the task statement and provided input/reference files; check for degenerate contents; fix and re-run only on concrete discrepancy, otherwise confirm and finish). A closure-local flag makes it fire at most once per createLoopConfig call (one prompt/continue cycle), so the second stop is always accepted and no infinite loop is possible. This is adaptive stopping / completion-state detection in the agent loop, explicitly in scope for PI_SRC_AGENT_LOOP; it contains no task-specific or science-domain policy.",
+    "evidence_basis": "within_task_contrast",
+    "prior_attempt_disposition": "new_direction",
+    "why_this_component": "PI_SRC_AGENT_LOOP owns when a run stops; runLoop calls getFollowUpMessages exactly at the stop decision, and Agent.createLoopConfig is on the verified default RSIBench path (print-mode -> sdk.ts line 294 new Agent -> AgentSession.prompt -> _runAgentPrompt -> agent.prompt). The trigger condition (assistant stop attempt after a successful write/edit) demonstrably occurred in every failing trajectory immediately before the verifier failure. Observation, transport, compaction, and resource loading are exonerated (0 compaction events, 0 load errors, benign ModuleNotFound only, across all 36 rollouts). The rejected round-01 mechanism was a static SHARED_PROMPT policy applied from turn 0 that regressed net score; this change does not touch any prompt file and instead adds completion-gated stop behavior, a capability the developer guide explicitly lists for this module (adaptive stopping, completion-state detection), and the injected message is task-general.",
+    "predicted_fixes": [
+      "sab_15: the gate turn re-opens pred_results/aai_preds.csv and the provided test.csv, catching the Drug_ID,Drug,prob vs Drug_ID,Drug,Y schema divergence and mirroring the input schema as passing rep 2 did; predicted flip of 1-2 failing repeats (fail->pass), raising sab_15 from 1/3 toward 3/3",
+      "sab_1: the degenerate-value check surfaces rep 2's collapsed CT_TOX probabilities (0.01-0.16) and prompts an ensemble/seeding fix; possible fail->pass on rep 2 (partial, lower confidence)",
+      "No change expected on all-pass tasks (sab_101, sab_16, sab_29): one extra bounded turn that ends in confirmation, matching the voluntary verification passing repeats already exhibit; net train mean predicted to rise from 0.3889"
+    ],
+    "regression_risks": [
+      "One extra LLM turn per file-producing run: modest token/time cost; observed TRAIN durations (9-30 min) are far below the 180-minute ceiling",
+      "The model could destructively modify a correct artifact during the gate turn; mitigated by the instruction to fix only on concrete discrepancy and otherwise confirm and finish, and by passing repeats already performing voluntary end-of-run checks without harm",
+      "Interactive/SDK users get one verification turn after write/edit runs; bounded to once per prompt cycle, never on pure-chat turns, never on aborted/errored runs, and cannot loop (flag latches after first offer)",
+      "Runs that produce files only via bash (no write/edit tool result) do not trigger the gate; acceptable since all 36 observed trajectories used the write tool"
+    ],
+    "targeted_checks": [
+      "Module tests: packages/agent vitest agent-loop.test.ts + agent.test.ts = 41/41 passed; harness suite 177/177 passed (sqlite-migrations/sqlite-node suites fail only at import because node:sqlite is missing on Node 22; reproduced identically on the clean tree via git stash, so pre-existing and unrelated)",
+      "Frozen checker: python3 /app/rsibench-source-candidate-check.py --agent pi --source /app/pi-source-candidate -> passed=true (npm-ci-offline, build-offline including tsgo typecheck of pi-agent-core, pi-cli-smoke 0.82.1); output at /logs/agent/candidate-self-check.json",
+      "Behavioral invariants to validate on TRAIN reruns: a run with a successful write/edit tool result emits exactly one completion-check user follow-up before agent_end; a run with no write/edit emits none; the stop after the gate turn is accepted (no refire); aborted or errored runs emit no gate message"
+    ],
+    "analysis_tags": [
+      "completion-gate",
+      "adaptive-stopping",
+      "completion-state-detection",
+      "agent-loop",
+      "non-prompt-physical-module",
+      "output-contract-verification",
+      "within-task-contrast",
+      "sab_15",
+      "sab_1",
+      "sab_87"
+    ]
+  }
+}
