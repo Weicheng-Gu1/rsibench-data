@@ -1,0 +1,318 @@
+diff --git a/packages/coding-agent/src/core/tools/bash.ts b/packages/coding-agent/src/core/tools/bash.ts
+index 1c245cb..d9789cf 100644
+--- a/packages/coding-agent/src/core/tools/bash.ts
++++ b/packages/coding-agent/src/core/tools/bash.ts
+@@ -1,5 +1,6 @@
+-import { constants } from "node:fs";
+-import { access as fsAccess } from "node:fs/promises";
++import { constants, type Dirent } from "node:fs";
++import { access as fsAccess, readdir, readFile, stat } from "node:fs/promises";
++import path from "node:path";
+ import type { AgentTool } from "@earendil-works/pi-agent-core";
+ import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
+ import { spawn } from "child_process";
+@@ -183,6 +184,254 @@ function resolveSpawnContext(
+ 	return spawnHook ? spawnHook(baseContext) : baseContext;
+ }
+ 
++/**
++ * Success-only, best-effort observation enrichments appended to bash results.
++ * Every detector is wrapped by its caller so any failure degrades to baseline output.
++ */
++const TRAINING_COMMAND_PATTERN =
++	/\.fit(?:_predict|_transform)?\s*\(|GridSearchCV|RandomizedSearchCV|cross_val_score|cross_validate|nb_epoch\b|num_epochs\b/;
++
++const TRAINING_ROBUSTNESS_NOTE =
++	"\n\n[training-robustness note] This command ran model-training code. Before finalizing predictions from a single training run: " +
++	"(1) fix random seeds and prefer a small seed/config ensemble over one fit; " +
++	"(2) use class weights or resampling when training labels are imbalanced; " +
++	"(3) when test labels are masked or placeholders, tune decision thresholds on held-out training splits; " +
++	"(4) inspect saved predictions for degenerate collapse (near-constant or single-class scores).";
++
++const MAX_SCRIPT_SNIFF_BYTES = 512 * 1024;
++const MAX_CSV_BYTES = 64 * 1024 * 1024;
++const MAX_WALK_ENTRIES = 20000;
++const MAX_WALK_DEPTH = 6;
++const MAX_FRESH_ARTIFACTS = 3;
++const MAX_REFERENCE_FILES = 40;
++/** Clock-skew slack for mtime comparisons (LLM turn gaps are seconds; writes land inside the command window). */
++const MTIME_SLACK_MS = 1000;
++
++/** Extract script paths from `python <script>.py` invocations inside a shell command. */
++function extractPythonScriptPaths(command: string): string[] {
++	const paths: string[] = [];
++	const re = /(?:^|[\s;&|])python(?:\d(?:\.\d+)*)?(?:\s+-[^\s;&|]+)*\s+([^\s;&|"'`]+\.py)\b/g;
++	let m: RegExpExecArray | null;
++	while ((m = re.exec(command)) !== null) paths.push(m[1]);
++	return paths;
++}
++
++/** Resolve the effective working directory after any `cd` segments chained with && or ;. */
++function resolveCommandCwd(command: string, cwd: string): string {
++	let target = cwd;
++	const re = /(?:^|[;&|]\s*)cd\s+([^\s;&|]+)/g;
++	let m: RegExpExecArray | null;
++	while ((m = re.exec(command)) !== null) {
++		const segment = m[1];
++		target = path.isAbsolute(segment) ? segment : path.resolve(target, segment);
++	}
++	return target;
++}
++
++/**
++ * Detect commands that execute supervised model-training code, either directly in the
++ * command text or, for `python <script>.py` invocations, via a bounded read-only sniff
++ * of the resolved script.
++ */
++async function commandRunsModelTraining(command: string, cwd: string): Promise<boolean> {
++	if (TRAINING_COMMAND_PATTERN.test(command)) return true;
++	const base = resolveCommandCwd(command, cwd);
++	for (const raw of extractPythonScriptPaths(command)) {
++		try {
++			const scriptPath = path.isAbsolute(raw) ? raw : path.resolve(base, raw);
++			const st = await stat(scriptPath);
++			if (!st.isFile() || st.size > MAX_SCRIPT_SNIFF_BYTES) continue;
++			const content = await readFile(scriptPath, "utf8");
++			if (TRAINING_COMMAND_PATTERN.test(content)) return true;
++		} catch {
++			// Unreadable or missing script: ignore.
++		}
++	}
++	return false;
++}
++
++interface CsvMeta {
++	path: string;
++	columns: string[];
++	rows: number;
++}
++
++/** Recursively collect *.csv files under root, pruning hidden dirs and node_modules. */
++async function walkCsvFiles(
++	root: string,
++	skipTopLevelDirs: Set<string>,
++	cap: { count: number },
++): Promise<string[]> {
++	const out: string[] = [];
++	const walk = async (dir: string, depth: number): Promise<void> => {
++		if (depth > MAX_WALK_DEPTH || cap.count > MAX_WALK_ENTRIES) return;
++		let entries: Dirent[];
++		try {
++			entries = await readdir(dir, { withFileTypes: true });
++		} catch {
++			return;
++		}
++		for (const entry of entries) {
++			if (cap.count++ > MAX_WALK_ENTRIES) return;
++			if (entry.isSymbolicLink()) continue;
++			const full = path.join(dir, entry.name);
++			if (entry.isDirectory()) {
++				if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
++				if (depth === 0 && skipTopLevelDirs.has(entry.name)) continue;
++				await walk(full, depth + 1);
++			} else if (entry.isFile() && entry.name.toLowerCase().endsWith(".csv")) {
++				out.push(full);
++			}
++		}
++	};
++	await walk(root, 0);
++	return out;
++}
++
++/** Parse a CSV header line, dropping empty and pandas-style unnamed index columns. */
++function parseCsvHeader(line: string): string[] {
++	return line
++		.split(",")
++		.map((c) => c.trim().replace(/^"|"$/g, "").trim())
++		.filter((c) => c.length > 0 && !/^unnamed/i.test(c));
++}
++
++/** Read header columns and count data rows of a CSV file (bounded size). */
++async function readCsvMeta(filePath: string): Promise<CsvMeta | null> {
++	try {
++		const st = await stat(filePath);
++		if (!st.isFile() || st.size === 0 || st.size > MAX_CSV_BYTES) return null;
++		const content = await readFile(filePath, "utf8");
++		const firstNewline = content.indexOf("\n");
++		const headerLine = firstNewline === -1 ? content : content.slice(0, firstNewline);
++		const columns = parseCsvHeader(headerLine);
++		if (columns.length === 0) return null;
++		let newlines = 0;
++		for (let i = 0; i < content.length; i++) {
++			if (content.charCodeAt(i) === 10) newlines++;
++		}
++		let rows = newlines - 1; // subtract the header line
++		if (!content.endsWith("\n")) rows += 1;
++		if (rows < 0) rows = 0;
++		return { path: filePath, columns, rows };
++	} catch {
++		return null;
++	}
++}
++
++function formatColumnList(columns: string[]): string {
++	const shown = columns.slice(0, 8).join(", ");
++	return columns.length > 8 ? `${shown}, …` : shown;
++}
++
++/**
++ * Cross-check freshly written CSV artifacts against provided reference CSVs.
++ *
++ * When a command creates or updates a CSV under the working directory and a pre-existing
++ * CSV has the same data-row count, shares at least one column name with it, but contains
++ * one or two additional (non-index) columns the artifact lacks, the artifact likely
++ * re-invented a schema that a provided file already defines (e.g. a test split whose
++ * target column should be mirrored into a prediction file). Returns an advisory note
++ * surfacing that concrete evidence, or "" when nothing matches.
++ */
++async function buildSchemaCrossCheckNote(
++	command: string,
++	cwd: string,
++	startedAt: number,
++	sessionStartedAt: number,
++): Promise<string> {
++	const effectiveCwd = resolveCommandCwd(command, cwd);
++	const artifactPaths = await walkCsvFiles(effectiveCwd, new Set(["benchmark"]), { count: 0 });
++	const fresh: CsvMeta[] = [];
++	for (const p of artifactPaths) {
++		if (fresh.length >= MAX_FRESH_ARTIFACTS) break;
++		try {
++			const st = await stat(p);
++			if (st.mtimeMs < startedAt - MTIME_SLACK_MS) continue;
++			const meta = await readCsvMeta(p);
++			if (meta && meta.rows > 0) fresh.push(meta);
++		} catch {
++			// Skip unreadable artifacts.
++		}
++	}
++	if (fresh.length === 0) return "";
++
++	const freshSet = new Set(fresh.map((f) => f.path));
++	const referencePaths = (await walkCsvFiles(effectiveCwd, new Set(), { count: 0 }))
++		.filter((p) => !freshSet.has(p) && !p.split(path.sep).includes("gold_results"))
++		.sort((a, b) => {
++			// Provided benchmark inputs first.
++			const aBench = a.split(path.sep).includes("benchmark") ? 0 : 1;
++			const bBench = b.split(path.sep).includes("benchmark") ? 0 : 1;
++			return aBench - bBench;
++		});
++	const references: CsvMeta[] = [];
++	for (const p of referencePaths) {
++		if (references.length >= MAX_REFERENCE_FILES) break;
++		try {
++			const st = await stat(p);
++			// References are provided inputs: they must predate the session, so files
++			// the agent itself wrote earlier in the run never pose as references.
++			if (st.mtimeMs >= sessionStartedAt - MTIME_SLACK_MS) continue;
++			const meta = await readCsvMeta(p);
++			if (meta) references.push(meta);
++		} catch {
++			// Skip unreadable references.
++		}
++	}
++
++	const notes: string[] = [];
++	for (const artifact of fresh) {
++		const artifactCols = new Set(artifact.columns);
++		let best: { ref: CsvMeta; shared: string[]; extras: string[] } | null = null;
++		for (const ref of references) {
++			if (ref.rows !== artifact.rows) continue;
++			const refCols = new Set(ref.columns);
++			const shared = artifact.columns.filter((c) => refCols.has(c));
++			if (shared.length === 0) continue;
++			const extras = ref.columns.filter((c) => !artifactCols.has(c));
++			if (extras.length < 1 || extras.length > 2) continue;
++			if (!best || shared.length > best.shared.length) best = { ref, shared, extras };
++		}
++		if (!best) continue;
++		notes.push(
++			`\n\n[output-schema note] This command wrote ${path.relative(effectiveCwd, artifact.path)} ` +
++				`(${artifact.rows} data rows, columns: ${formatColumnList(artifact.columns)}). ` +
++				`Provided data file ${path.relative(effectiveCwd, best.ref.path)} has the same row count and shares ` +
++				`column(s) [${formatColumnList(best.shared)}], but also contains column(s) ` +
++				`[${formatColumnList(best.extras)}] absent from your file. If this file is a prediction or submission ` +
++				"for the same rows and the task statement does not explicitly dictate different column names, mirror " +
++				"the provided file's schema (reuse its exact column names, including its target/label column) rather " +
++				"than inventing new ones; re-open both files and confirm before finishing.",
++		);
++	}
++	return notes.join("");
++}
++
++/** Append success-only observation notes to a completed command's output. Never throws. */
++async function appendSuccessNotes(
++	command: string,
++	cwd: string,
++	startedAt: number,
++	sessionStartedAt: number,
++	outputText: string,
++): Promise<string> {
++	let text = outputText;
++	try {
++		if (await commandRunsModelTraining(command, cwd)) {
++			text += TRAINING_ROBUSTNESS_NOTE;
++		}
++	} catch {
++		// Detection failure degrades to baseline output.
++	}
++	try {
++		text += await buildSchemaCrossCheckNote(command, cwd, startedAt, sessionStartedAt);
++	} catch {
++		// Detection failure degrades to baseline output.
++	}
++	return text;
++}
++
+ export interface BashToolOptions {
+ 	/** Custom operations for command execution. Default: local shell */
+ 	operations?: BashOperations;
+@@ -321,6 +570,10 @@ export function createBashToolDefinition(
+ 	const commandPrefix = options?.commandPrefix;
+ 	const exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
+ 	const spawnHook = options?.spawnHook;
++	// Approximate session start: tool definitions are created during session setup,
++	// before any command runs. Used to distinguish provided input files from
++	// artifacts the agent itself produced during the session.
++	const sessionStartedAt = Date.now();
+ 	return {
+ 		name: "bash",
+ 		label: "bash",
+@@ -424,6 +677,7 @@ export function createBashToolDefinition(
+ 			const appendStatus = (text: string, status: string) => `${text ? `${text}\n\n` : ""}${status}`;
+ 
+ 			try {
++				const startedAt = Date.now();
+ 				let exitCode: number | null;
+ 				try {
+ 					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
+@@ -448,10 +702,28 @@ export function createBashToolDefinition(
+ 
+ 				const snapshot = await finishOutput();
+ 				const { text: outputText, details } = formatOutput(snapshot);
+-				if (exitCode !== 0 && exitCode !== null) {
++				if (exitCode === null) {
++					// The process was terminated by a signal (e.g. OOM kill) before it could
++					// exit normally. Surface this as an error with the partial output so the
++					// model recovers instead of reasoning over a silently truncated run.
++					throw new Error(
++						appendStatus(
++							outputText,
++							"Command was terminated by a signal before it could complete (partial output above; consider re-running it or reducing its footprint)",
++						),
++					);
++				}
++				if (exitCode !== 0) {
+ 					throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
+ 				}
+-				return { content: [{ type: "text", text: outputText }], details };
++				const enrichedText = await appendSuccessNotes(
++					spawnContext.command,
++					spawnContext.cwd,
++					startedAt,
++					sessionStartedAt,
++					outputText,
++				);
++				return { content: [{ type: "text", text: enrichedText }], details };
+ 			} finally {
+ 				clearUpdateTimer();
+ 			}

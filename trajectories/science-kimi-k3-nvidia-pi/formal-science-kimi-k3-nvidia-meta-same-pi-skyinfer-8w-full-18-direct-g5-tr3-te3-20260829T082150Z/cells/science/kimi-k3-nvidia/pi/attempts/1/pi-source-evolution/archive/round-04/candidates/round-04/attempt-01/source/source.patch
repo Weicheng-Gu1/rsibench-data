@@ -1,0 +1,66 @@
+diff --git a/packages/coding-agent/src/core/tools/bash.ts b/packages/coding-agent/src/core/tools/bash.ts
+index 1c245cb..b1eae22 100644
+--- a/packages/coding-agent/src/core/tools/bash.ts
++++ b/packages/coding-agent/src/core/tools/bash.ts
+@@ -1,5 +1,6 @@
+-import { constants } from "node:fs";
++import { constants, readFileSync } from "node:fs";
+ import { access as fsAccess } from "node:fs/promises";
++import { resolve as resolvePath } from "node:path";
+ import type { AgentTool } from "@earendil-works/pi-agent-core";
+ import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
+ import { spawn } from "child_process";
+@@ -37,6 +38,36 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
+ 	return timeoutMs;
+ }
+ 
++/**
++ * Heuristic for detecting commands that execute supervised model-training code, either inline
++ * (heredocs, `python -c`) or via `python <script>.py`. Used for phase-aware result enrichment:
++ * when a training run succeeds, the result is annotated with robustness reminders that are
++ * relevant exactly at model-selection time. Commands that do not run model training are never
++ * annotated, so non-ML sessions observe byte-identical tool results.
++ */
++const MODEL_TRAINING_PATTERN =
++	/(\.fit\s*\(|\.fit_predict\s*\(|\bGridSearchCV\b|\bRandomizedSearchCV\b|\bcross_val_score\b|\bcross_validate\b|\bnb_epoch\b|\bnum_epochs\b)/;
++
++const MODEL_TRAINING_NOTE =
++	"[Note: this command ran model-training code. Before finalizing deliverables that depend on a trained model: " +
++	"fix random seeds and prefer a small seed/config ensemble over a single fit; use class weights or resampling " +
++	"when labels are imbalanced; tune decision thresholds on held-out training data when test labels are masked or " +
++	"placeholders; and check saved predictions for degenerate collapse (near-constant or saturated scores).]";
++
++function commandRunsModelTraining(command: string, cwd: string): boolean {
++	if (MODEL_TRAINING_PATTERN.test(command)) return true;
++	// Commands like `python analysis.py` hide their code in a file; inspect it read-only.
++	const scriptMatch = command.match(/(?:^|[\s;&|])(?:python|python3)\s+(["']?)([^\s;&|'"]+\.py)\1/);
++	if (!scriptMatch) return false;
++	try {
++		const scriptPath = resolvePath(cwd, scriptMatch[2]);
++		const content = readFileSync(scriptPath, "utf-8");
++		return MODEL_TRAINING_PATTERN.test(content.slice(0, 256 * 1024));
++	} catch {
++		return false;
++	}
++}
++
+ const bashSchema = Type.Object({
+ 	command: Type.String({ description: "Bash command to execute" }),
+ 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+@@ -451,7 +482,15 @@ export function createBashToolDefinition(
+ 				if (exitCode !== 0 && exitCode !== null) {
+ 					throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
+ 				}
+-				return { content: [{ type: "text", text: outputText }], details };
++				let resultText = outputText;
++				try {
++					if (commandRunsModelTraining(spawnContext.command, spawnContext.cwd)) {
++						resultText = appendStatus(outputText, MODEL_TRAINING_NOTE);
++					}
++				} catch {
++					// Detection is best-effort and must never affect tool behavior.
++				}
++				return { content: [{ type: "text", text: resultText }], details };
+ 			} finally {
+ 				clearUpdateTimer();
+ 			}

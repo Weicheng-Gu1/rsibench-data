@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "change_id": "r04-tool-runtime-training-phase-note",
+  "layer": "agent_core_source",
+  "primary_module": "PI_SRC_TOOL_RUNTIME",
+  "compound_modules": [],
+  "files": [
+    "packages/coding-agent/src/core/tools/bash.ts"
+  ],
+  "requires_rebuild": true,
+  "failure_evidence": [
+    "scienceagentbench-sab_1/repeat_02 FAIL (task_solution_failure vs hidden gold): action_25 finalized a single 150-epoch deepchem net although action_23's own test run showed collapsed CT_TOX probabilities (~1e-8); verifier failed pred_results/clintox_nn_pred.csv. Passing contrast sab_1/repeat_01: same collapse observed, then BalancingTransformer + hyperparameter sweep + 5-seed ensemble -> PASS.",
+    "scienceagentbench-sab_18/repeats 00-02 (0/3 FAIL): every repeat runs `python DILI_models_ECFP_RF.py` (RandomForest grid search on imbalanced DILI labels emitting hard labels) and ships the first grid winner at CV AUC ~0.80 with no class balancing, seed ensembling, or threshold tuning; verifier failed all three.",
+    "scienceagentbench-sab_40/repeat_02 FAIL: single grid-search config shipped at CV AUC 0.817 against a ~0.819 pass bar; passing repeats 00/01 used class_weight balancing and broader tuning, a within-task contrast on identical data.",
+    "Round-01 measured flip: an always-on SHARED_PROMPT containing modeling-robustness directives flipped sab_18 fail->pass and improved sab_40, while its output-contract/verification directives regressed sab_29; rounds 02 (stop-time verification gate) and 03 (behavior-invisible bash fidelity fix) were both rejected at 12/36 with identical pass<->fail flips, marking stop-time verification as falsified and sab_15/sab_40/sab_1 swings under invisible changes as rerun noise."
+  ],
+  "root_cause": "On supervised-ML tasks the agent commits its final predictive configuration from a single arbitrary point in the search space (one seed, one fit, no balancing or threshold tuning) at the moment training results return, and nothing in the harness marks that model-selection moment. The deficit is not missing information (failing repeats often printed the same collapse/marginal-metric evidence as passing repeats) but the absence of any phase signal at the decision point, so high-variance or degenerate model choices ship unchanged into the deliverable.",
+  "mechanism": "packages/coding-agent/src/core/tools/bash.ts (PI_SRC_TOOL_RUNTIME, non-prompt physical module): phase-aware tool-result enrichment. commandRunsModelTraining() detects successful bash commands that execute supervised-training code via a pattern on the command text (.fit(, .fit_predict(, GridSearchCV, RandomizedSearchCV, cross_val_score, cross_validate, nb_epoch, num_epochs) or, for `python <script>.py` invocations, a bounded read-only content sniff of the resolved script. On success (exitCode 0) only, a fixed four-point robustness note is appended to the result: fix random seeds and prefer a small seed/config ensemble over a single fit; use class weights or resampling when labels are imbalanced; tune decision thresholds on held-out training data when test labels are masked or placeholders; check saved predictions for degenerate collapse. Error/timeout/abort paths, exit-code semantics, truncation and rendering are unchanged; detection is wrapped so failure degrades to baseline behavior. Fire profile verified against all 36 baseline trajectories: fires on sab_1, sab_15, sab_18, sab_40 (and sab_101) runs and never on sab_16/21/29/34/35/67/87, so non-ML sessions see byte-identical tool results.",
+  "evidence_basis": "within_task_contrast",
+  "prior_attempt_disposition": "rollback_and_pivot",
+  "why_this_component": "The prompt layer is blocked (prompt_policy.required_action = choose_a_non_prompt_physical_module) and its always-on form churned passing non-ML runs in round-01. Stop-time agent-loop gating was empirically falsified in round-02 (sab_15 remained 0/3 with the gate), and invisible runtime fixes cannot move scores (round-03). bash.ts is on the default print-mode tool path, observes both the command and its result at the exact model-selection moment (mid-run, while iteration is still possible, unlike round-02's stop-time gate), can fire conditionally only where training code actually runs, and its result text is what the model reads next. That makes it the physical site that can deliver round-01's demonstrated-positive robustness signal with provably zero blast radius on non-ML tasks.",
+  "predicted_fixes": [
+    "sab_18 (0/3 -> >=1/3): the note fires on every `python DILI_models_ECFP_RF.py` run before the final artifact; round-01 already measured this task's fail->pass flip when the same robustness content was present.",
+    "sab_1 (2/3 -> 3/3): the note fires at the training-experiment commands and the final training run, targeting the exact observed pass/fail contrast (balanced 5-seed ensemble vs single 150-epoch net chosen after a visible probability collapse).",
+    "sab_40 (2/3 -> 3/3): the pass bar is a razor margin (CV AUC 0.817 fail vs 0.819 pass); seed/config ensembling and held-out threshold tuning stabilize the final predictions across that margin."
+  ],
+  "regression_risks": [
+    "sab_101 (3/3 passing) also matches the detector (MODNet .fit); mitigated because the note is short, additive, and contains no output-schema or verification directives, the components that caused round-01 churn.",
+    "sab_15's schema coin-flip is deliberately not addressed: the note contains no output-contract language, so it is expected-neutral there rather than risking round-01's harmful component.",
+    "Token cost is ~80 tokens per successful training command (at most ~6 per run in baseline trajectories); detection is best-effort and exception-wrapped so it can never alter exit-code semantics, truncation, or rendering."
+  ],
+  "targeted_checks": [
+    "tools",
+    "headless-print-mode"
+  ],
+  "analysis_tags": [
+    "phase_aware_observation",
+    "model_training_robustness",
+    "within_task_contrast",
+    "prior_round_narrowing",
+    "non_ml_untouched",
+    "conditional_tool_result_enrichment"
+  ]
+}
