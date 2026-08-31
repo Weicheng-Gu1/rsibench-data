@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Frozen TRAIN evidence shows 26/36 trajectories fail (mean reward 0.278). 11 of those are wall-clock timeouts (sab_15 x3, sab_18 r0, sab_21 r0/r1, sab_34 r0, sab_40 x3, sab_67 r1) where the agent keeps exploring/tuning and never writes the required output before the 3600s harness kill. The mixed task sab_67 makes the contrast concrete: failing repeat_1 spent 29 turns exploring (read/list/numpy/web) and never produced output, while passing repeat_2 committed and wrote the solution file. No passing training trajectory exceeds 2727s wall-clock, so an escalating deadline reminder injected only after ~51-57 minutes cannot disturb current passes. I implemented deadline-aware turn control in the agent loop (an explicitly allowed source capability): track per-run elapsed wall-clock time and append request-local, model-visible reminders to the system prompt at 85% and 95% of a 3600s default budget. The candidate checker (npm-ci-offline, build-offline, pi-cli-smoke) and the agent-loop/agent unit tests all pass.",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "deadline-aware-turn-control",
+    "failure_evidence": [
+      "task=scienceagentbench-sab_67; failure_repeat=1; action=agent spent 29 turns exploring (read AGENTS.md, list files, numpy inspection, web searches) and never wrote the required pred_results output before the wall-clock deadline; verifier=AgentTimeoutError: Agent execution timed out after 3600.0 seconds -> reward 0; pass_repeat=2",
+      "task=scienceagentbench-sab_15; failure_repeat=0; action=XGBoost/LightGBM hyperparameter tuning loop over bash (actions 10-36) never wrote the prediction output file; verifier=AgentTimeoutError after 3600.0 seconds -> reward 0; pass_repeat=none",
+      "/app/pi-source-evidence/references/31f2f8e21fcd33a7-training-opportunity-index.json",
+      "/app/pi-source-evidence/references/3d48b0d515c76aec-training-failures.json",
+      "/app/pi-source-evidence/references/c0a14012e32b48c6-scienceagentbench-sab_67.md",
+      "/app/pi-source-evidence/references/bcbccef6c4b261a8-scienceagentbench-sab_15.md"
+    ],
+    "root_cause": "The agent loop has no awareness of the wall-clock deadline enforced by the external task harness. In timeout trajectories the model keeps exploring or tuning and never commits a best-effort output, so the harness kills the run at 3600s with reward 0 even though the model had a usable result in hand.",
+    "mechanism": "Track per-run elapsed wall-clock time (Date.now() captured at runLoop start). Before every provider request, streamAssistantResponse calls appendDeadlineReminder, which appends an escalating system-prompt reminder once elapsed time crosses 85% (~51 min) and 95% (~57 min) of the 3600s default budget (configurable via AgentLoopConfig.timeBudgetMs; 0 disables). The reminder tells the model to stop exploring, write the required output file(s) with its current best result, and finish. It is request-local (never mutates stored session state) and fires only on turns after the threshold, so it reaches the model on the default Pi task-agent path (sdk.ts -> Agent -> runAgentLoop) with no wiring changes to frozen sdk assembly.",
+    "evidence_basis": "cross_task_pattern",
+    "prior_attempt_disposition": "new_direction",
+    "why_this_component": "PI_SRC_AGENT_LOOP owns turn progression and stopping, and deadline-aware turn control is an explicitly allowed source capability addition. streamAssistantResponse is the last step before the provider handoff, so the injected reminder is guaranteed model-visible on the default execution path without touching frozen sdk.ts or provider serialization. The 85%/95% thresholds are placed above the maximum passing training duration (2727s) to avoid regressing current passes.",
+    "predicted_fixes": [
+      "Timeout trajectories (sab_15 x3, sab_18 r0, sab_21 r0/r1, sab_34 r0, sab_40 x3, sab_67 r1) receive escalating finalize reminders before the 3600s wall, so the model writes best-effort output instead of being killed with no output file.",
+      "No currently-passing training trajectory is disturbed: all pass durations are below the 3060s warn threshold.",
+      "The reminder is request-local, so session history and stored system prompt are unchanged."
+    ],
+    "regression_risks": [
+      "A slow-but-correct run exceeding ~51 minutes could finalize early with a wrong answer (no such case in the frozen training split; max pass duration is 2727s).",
+      "Long interactive sessions receive the same reminder after ~51 minutes of a single run.",
+      "Adds a short reminder to the system prompt on late turns (negligible token cost)."
+    ],
+    "targeted_checks": [
+      "agent-loop",
+      "Unit-level check: fake Date.now() just below/above 85% and 95% of timeBudgetMs and assert appendDeadlineReminder injects the reminder into the system prompt passed to the stream function (and omits it before the threshold)."
+    ],
+    "analysis_tags": [
+      "deadline-aware-turn-control",
+      "agent-timeout",
+      "cross-task-pattern",
+      "source-capability"
+    ]
+  }
+}

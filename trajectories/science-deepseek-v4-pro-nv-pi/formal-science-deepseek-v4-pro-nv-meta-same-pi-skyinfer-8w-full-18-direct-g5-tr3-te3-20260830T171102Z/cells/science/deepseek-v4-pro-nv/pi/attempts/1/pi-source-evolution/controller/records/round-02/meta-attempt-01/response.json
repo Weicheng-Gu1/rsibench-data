@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "Frozen TRAIN evidence shows 11/26 failing trajectories end in AgentTimeoutError, and every timeout trajectory terminates with an unterminated bash tool call that has no explicit timeout: filesystem-wide greps (sab_34 r0, sab_67 r1) hang the agent loop indefinitely, and unbounded ML tuning scripts run 1033-1629s on a single call (sab_15 r2, sab_18 r0, sab_21 r1, sab_40 r1/r2). The bash tool (packages/coding-agent/src/core/tools/bash.ts) currently has no default timeout, so a runaway command silently consumes the entire 3600s budget while the agent loop waits for a result that never arrives. The fix gives the bash tool a default 600s timeout (overridable by an explicit timeout argument or BashToolOptions.defaultTimeoutSeconds), so runaway commands are killed and reported as 'Command timed out after 600 seconds', letting the model adapt with the remaining budget instead of being killed with no output. Passing rollouts are protected: the longest single command across all passing trajectories is 310s. This is a new mechanism (tool-runtime bounded execution), not a re-attempt of the falsified round-01 deadline-reminder prompt injection. The frozen candidate checker passed (npm-ci-offline, build-offline, pi-cli-smoke).",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "bash-default-timeout",
+    "failure_evidence": [
+      "task=scienceagentbench-sab_34; failure_repeat=0; action=final bash tool call `grep -rl \"hrv_analysis_pred\" / 2>/dev/null | head -20` issued with no timeout and no toolResult ever returned (trajectory ends mid-command); verifier=AgentTimeoutError: Agent execution timed out after 3600.0 seconds -> reward 0; pass_repeat=none",
+      "task=scienceagentbench-sab_67; failure_repeat=1; action=final bash tool call `grep -R \"fit_result_conscientiousness|CogSci_pattern_high_sim\" / 2>/dev/null | head -50` issued with no timeout and no toolResult ever returned; verifier=AgentTimeoutError after 3600.0 seconds -> reward 0; pass_repeat=2",
+      "task=scienceagentbench-sab_15; failure_repeat=2; action=unbounded hyperparameter-tuning script ran 1486s on a single bash call with no effective timeout; verifier=AgentTimeoutError after 3600.0 seconds -> reward 0; pass_repeat=none",
+      "task=scienceagentbench-sab_21; failure_repeat=1; action=geopandas buffer operation ran 1629s on a single bash call with no timeout; verifier=AgentTimeoutError after 3600.0 seconds -> reward 0; pass_repeat=none",
+      "/app/pi-source-evidence/references/31570432651898d9-training-opportunity-index.json",
+      "/app/pi-source-evidence/references/83f6818348c89191-trajectory.jsonl",
+      "/app/pi-source-evidence/references/5d67e45ad801b567-trajectory.jsonl"
+    ],
+    "root_cause": "The bash tool executes commands with no default timeout: when a command does not specify a timeout, resolveTimeoutMs returns undefined and the spawned process is allowed to run unbounded. In the timeout trajectories the model issues commands that never terminate (filesystem-wide greps over /, unbounded RandomizedSearchCV/XGBoost tuning, slow geopandas operations) without a timeout argument, so the agent loop blocks on a result that never arrives and the external harness kills the whole run at 3600s with reward 0 even though the model had budget and often a usable partial result.",
+    "mechanism": "Add DEFAULT_TIMEOUT_SECONDS = 600 to packages/coding-agent/src/core/tools/bash.ts and an optional BashToolOptions.defaultTimeoutSeconds override. The bash tool's execute() computes effectiveTimeout = timeout ?? options?.defaultTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS and passes it to ops.exec, so every bash tool call is bounded. A runaway command is killed at 600s and its tool result becomes an error 'Command timed out after 600 seconds' (with any partial stdout preserved), which the model observes and can react to. Explicit timeout arguments still override the default (up to the existing max), and the interactive/RPC executeBash path (bash-executor.ts) is untouched because the default is applied inside the tool's execute, not in createLocalBashOperations.",
+    "evidence_basis": "cross_task_pattern",
+    "prior_attempt_disposition": "new_direction",
+    "why_this_component": "PI_SRC_TOOL_RUNTIME owns bash tool execution (packages/coding-agent/src/core/tools/bash.ts). The defect is mechanical unbounded command execution, not missing task guidance, so it belongs in the tool runtime rather than shared prompt/rules/skills. The bash tool is the default execution path for every task-agent command (trajectories show tool calls named 'bash' and mechanism evidence shows custom_tools_registered=[]), so the fix reaches the default Pi task-agent path with no wiring changes to frozen sdk assembly.",
+    "predicted_fixes": [
+      "Timeout trajectories that end with an unterminated filesystem-wide grep (sab_34 r0, sab_67 r1) now receive 'Command timed out after 600 seconds' after 600s instead of hanging ~40+ minutes, leaving the model ~50 minutes to scope the search and write the required pred_results output.",
+      "Unbounded single-call tuning scripts (sab_15 r2 1486s, sab_18 r0 1442s, sab_21 r1 1629s, sab_40 r1 1082s, sab_40 r2 1033s) are capped at 600s and reported as timed out, forcing the model to simplify or commit instead of silently exhausting the budget.",
+      "No currently-passing trajectory is disturbed: the longest single command across all passing rollouts is 310s, below the 600s default."
+    ],
+    "regression_risks": [
+      "A legitimately long command in an unseen task (e.g. a model training that needs more than 600s) would now be killed and reported as timed out; the model must re-issue it with an explicit larger timeout.",
+      "The default applies to every bash call, so a command that would have completed at, say, 700s now fails at 600s and wastes that time before a retry.",
+      "The model could misread the new default and under-specify timeouts for genuinely long commands."
+    ],
+    "targeted_checks": [
+      "tools",
+      "Unit-level: bash tool with `sleep 700` and no timeout returns an error containing 'Command timed out after 600 seconds' in approximately 600s; `sleep 5` with no timeout completes normally; explicit `timeout: 5` on `sleep 700` still returns 'Command timed out after 5 seconds'.",
+      "Task-level falsification: re-run a timeout task (scienceagentbench-sab_34 or scienceagentbench-sab_67) and verify the trajectory no longer ends with an unterminated bash call - the hung command is reported as timed out and the agent either completes with pred_results output or fails as a task-solution failure rather than an unterminated-command hang."
+    ],
+    "analysis_tags": [
+      "bash-default-timeout",
+      "agent-timeout",
+      "tool-runtime",
+      "runaway-command",
+      "cross-task-pattern"
+    ]
+  }
+}

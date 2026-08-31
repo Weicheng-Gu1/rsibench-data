@@ -1,0 +1,127 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 3a12506..452ab72 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -24,6 +24,19 @@ import type {
+ 
+ export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
+ 
++/**
++ * Default wall-clock time budget for a single agent run, used when
++ * `AgentLoopConfig.timeBudgetMs` is not set. Matches the typical long-running
++ * task harness budget so the model has time to finalize before a hard timeout.
++ */
++const DEFAULT_TIME_BUDGET_MS = 3_600_000;
++
++/** Fraction of the budget at which a gentle wrap-up reminder is injected. */
++const TIME_BUDGET_WARN_FRACTION = 0.85;
++
++/** Fraction of the budget at which an urgent finalize reminder is injected. */
++const TIME_BUDGET_URGENT_FRACTION = 0.95;
++
+ /**
+  * Start an agent loop with a new prompt message.
+  * The prompt is added to the context and events are emitted for it.
+@@ -163,6 +176,7 @@ async function runLoop(
+ 	let currentContext = initialContext;
+ 	let config = initialConfig;
+ 	let firstTurn = true;
++	const startedAt = Date.now();
+ 	// Check for steering messages at start (user may have typed while waiting)
+ 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
+ 
+@@ -190,7 +204,7 @@ async function runLoop(
+ 			}
+ 
+ 			// Stream assistant response
+-			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
++			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction, startedAt);
+ 			newMessages.push(message);
+ 
+ 			if (message.stopReason === "error" || message.stopReason === "aborted") {
+@@ -284,6 +298,7 @@ async function streamAssistantResponse(
+ 	signal: AbortSignal | undefined,
+ 	emit: AgentEventSink,
+ 	streamFunction: StreamFn,
++	startedAt: number,
+ ): Promise<AssistantMessage> {
+ 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
+ 	let messages = context.messages;
+@@ -296,7 +311,7 @@ async function streamAssistantResponse(
+ 
+ 	// Build LLM context
+ 	const llmContext: Context = {
+-		systemPrompt: context.systemPrompt,
++		systemPrompt: appendDeadlineReminder(context.systemPrompt, config, startedAt),
+ 		messages: llmMessages,
+ 		tools: context.tools,
+ 	};
+@@ -371,6 +386,46 @@ async function streamAssistantResponse(
+ 	return finalMessage;
+ }
+ 
++/**
++ * Append a deadline reminder to the system prompt when the run's wall-clock
++ * budget is nearly consumed. Returns the original prompt unchanged when no
++ * reminder applies. The reminder is model-visible only for the current request
++ * and never mutates stored session state.
++ */
++function appendDeadlineReminder(
++	systemPrompt: string,
++	config: AgentLoopConfig,
++	startedAt: number,
++): string {
++	const budgetMs = config.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS;
++	if (budgetMs <= 0) {
++		return systemPrompt;
++	}
++
++	const elapsedMs = Date.now() - startedAt;
++	const remainingMs = budgetMs - elapsedMs;
++	const remainingMinutes = Math.max(1, Math.round(remainingMs / 60_000));
++	const fractionUsed = elapsedMs / budgetMs;
++
++	let reminder: string | undefined;
++	if (fractionUsed >= TIME_BUDGET_URGENT_FRACTION) {
++		reminder =
++			`URGENT: only about ${remainingMinutes} minute(s) remain before this run is terminated. ` +
++			"Immediately write the required output file(s) using whatever result you have, then give your final answer. " +
++			"Do not start new long-running commands.";
++	} else if (fractionUsed >= TIME_BUDGET_WARN_FRACTION) {
++		reminder =
++			`Time budget notice: approximately ${remainingMinutes} minute(s) remain in this run's wall-clock budget. ` +
++			"Stop exploring and tuning now. Write any required output file(s) with your current best result, " +
++			"then give your final answer. A correctly-formatted result is better than a timeout.";
++	}
++
++	if (!reminder) {
++		return systemPrompt;
++	}
++	return systemPrompt ? `${systemPrompt}\n\n${reminder}` : reminder;
++}
++
+ /**
+  * Fail all tool calls from an assistant message that was truncated by the
+  * output token limit. Streamed tool-call arguments are finalized with a
+diff --git a/packages/agent/src/types.ts b/packages/agent/src/types.ts
+index 52f3489..a560931 100644
+--- a/packages/agent/src/types.ts
++++ b/packages/agent/src/types.ts
+@@ -262,6 +262,17 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
+ 	 */
+ 	toolExecution?: ToolExecutionMode;
+ 
++	/**
++	 * Wall-clock time budget for a single agent run, in milliseconds.
++	 *
++	 * When set, the loop tracks elapsed wall-clock time and injects escalating
++	 * deadline reminders into the system prompt as the budget is consumed, so the
++	 * model finalizes its work (e.g. writes required output files) before an
++	 * external harness timeout. Set to 0 to disable. When undefined, a default
++	 * budget of 3600000 ms is used.
++	 */
++	timeBudgetMs?: number;
++
+ 	/**
+ 	 * Called before a tool is executed, after arguments have been validated.
+ 	 *

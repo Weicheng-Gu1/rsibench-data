@@ -1,0 +1,39 @@
+diff --git a/packages/coding-agent/src/core/tools/bash.ts b/packages/coding-agent/src/core/tools/bash.ts
+index 1c245cb..875a7ad 100644
+--- a/packages/coding-agent/src/core/tools/bash.ts
++++ b/packages/coding-agent/src/core/tools/bash.ts
+@@ -24,6 +24,17 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult
+ const MAX_TIMEOUT_MS = 2_147_483_647;
+ const MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000;
+ 
++/**
++ * Default ceiling applied to bash tool calls that do not specify an explicit
++ * timeout. This is a safety net against commands that never terminate (for
++ * example an unscoped recursive search from the filesystem root), which would
++ * otherwise block the agent loop until the external harness deadline. It is
++ * deliberately above the longest single command observed in passing runs but
++ * far below a typical task wall-clock budget, so the model still has time to
++ * observe the timeout error and adapt. Explicit timeout arguments always win.
++ */
++const DEFAULT_TIMEOUT_SECONDS = 600;
++
+ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
+ 	if (timeout === undefined) return undefined;
+ 	if (!Number.isFinite(timeout) || timeout <= 0) {
+@@ -338,6 +349,7 @@ export function createBashToolDefinition(
+ 			ctx?,
+ 		) {
+ 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
++			const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS;
+ 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx);
+ 			const output = new OutputAccumulator({ tempFilePrefix: "pi-bash" });
+ 			let acceptingOutput = true;
+@@ -429,7 +441,7 @@ export function createBashToolDefinition(
+ 					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
+ 						onData: handleData,
+ 						signal,
+-						timeout,
++						timeout: effectiveTimeout,
+ 						env: spawnContext.env,
+ 					});
+ 					exitCode = result.exitCode;
