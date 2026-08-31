@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "decision": "submit",
+  "rationale": "The frozen TRAIN evidence shows 26 failed/partial trajectories across 12 ScienceAgentBench tasks (baseline mean reward 0.277778). I inventoried all failed tasks and prioritized the mixed pass/fail tasks, reading complete passing and failing rollouts for the same task. Within-task contrasts isolate a shared causal break: failing repeats self-validated circularly and skipped a verification step that the passing repeats performed. In sab_35, fail r0 called nk.rsp_peaks(cleaned) without sampling_rate (library default 1000 misreads 100 Hz data -> wrong RRV values -> reward 0), while pass r1 explicitly passed sampling_rate=100 after checking the data. In sab_16, fail r0 switched to the new GetMorganGenerator RDKit API and only checked equivalence on ~20 samples (output compound set differs from the legacy-API gold -> reward 0), while pass r1/r2 used the legacy GetMorganFingerprintAsBitVect API. The verify-work skill is loaded (skills_loaded contains 'verify-work') and read by the agent in every trajectory during validation, yet its body is a near-empty stub that gives no actionable verification procedure. The mechanism is therefore missing verification guidance at the exact validation checkpoint, demonstrated by within-task contrast. Prior rejected attempts (round-01 deadline turn control, round-02/03 bash default timeout) all targeted runtime/timing in core source and regressed passing tasks; this submission pivots to the untouched shared-skill layer, which owns the validation procedure and is read by the default execution path. The candidate checker passed (npm-ci-offline, build-offline, pi-cli-smoke).",
+  "manifest": {
+    "schema_version": 1,
+    "change_id": "round-04-verify-work-skill-verification-guidance",
+    "failure_evidence": [
+      "scienceagentbench-sab_35 repeat_0 (FAIL, reward 0): wrote RRV_analyze.py calling nk.rsp_peaks(cleaned) with no sampling_rate, so neurokit2 defaults to 1000 Hz on 100 Hz respiration data, producing wrong trough/peak detection and wrong RRV values in pred_results/rrv_analysis_pred.csv; the verifier rejected the CSV. Pass contrast: repeat_1 passed sampling_rate=100 after confirming the data is 100 Hz.",
+      "scienceagentbench-sab_35 repeat_2 (FAIL, reward 0): analyzed the wrong input file (bio_resting_5min_100hz.csv instead of the task's bio_eventrelated_100hz.csv), yielding a valid-looking but wrong output CSV. Pass contrast: repeat_1 explicitly selected bio_eventrelated_100hz.csv.",
+      "scienceagentbench-sab_16 repeat_0 (FAIL, reward 0): used the new rdkit GetMorganGenerator API for fingerprints and validated equivalence against the legacy API on only ~20 sampled molecules; the resulting compound_filter_results.txt differs from the legacy-API gold (line 4 is OC(=O)Cn1c2c... in the fail vs [C@]12([H])O... in both passes). Pass contrast: repeat_1 and repeat_2 used the legacy GetMorganFingerprintAsBitVect API and passed.",
+      "Cross-task pattern: 17 of the 26 failed/partial trajectories are task-solution failures where the agent wrote a plausible-looking output file and self-validated circularly (re-running its own code or asserting its own expected values), while the passing repeats performed an independent check of parameters, input-file selection, or API equivalence against the data/task spec.",
+      "The verify-work skill is surfaced to the model in every trajectory (skills_loaded contains 'verify-work' and the agent reads .pi/skills/verify-work/SKILL.md during validation), but its body is a stub with no actionable verification steps, so the validation checkpoint provides no guidance."
+    ],
+    "root_cause": "The agent's validation step is under-specified: the verify-work skill it loads and reads is a stub, so during final validation the agent re-runs its own code or asserts its own expected values instead of independently checking correctness-affecting choices (library parameter defaults vs actual data, legacy-vs-new API equivalence on the full input, which input file the task actually names, and the exact output file/format). Failing repeats therefore emit plausible but wrong outputs that the exact-match verifier rejects, while passing repeats happened to perform the missing check themselves.",
+    "mechanism": "Replace the stub .pi/skills/verify-work/SKILL.md body with a concise, reusable six-step verification procedure: (1) re-read the task's exact output requirements and check them against the file actually written; (2) confirm the output file exists, is non-empty, and inspect header/row-count/a few values; (3) when a library offers equivalent-looking alternatives, prefer the canonical form from the library's own documentation and confirm equivalence on the full input, not a few samples; (4) check correctness-affecting parameters (sampling rates, units, thresholds, axis/column selection) against the actual data rather than library defaults; (5) when several input files could match, state which one the task is about and why; (6) independently recompute with a different code path and compare. Also tighten the frontmatter description so the skill is invoked at the right checkpoint. This is a content-only shared-resource change consumed by the existing skill loader and read tool; no core-source rebuild or runtime/schema change is involved.",
+    "evidence_basis": "within_task_contrast",
+    "prior_attempt_disposition": "rollback_and_pivot",
+    "why_this_component": "The verify-work skill (SHARED_SKILLS) is the component that owns the validation checkpoint: it is loaded and read by the agent in every trajectory during final validation, exactly where the failing repeats diverged from the passing repeats. The within-task contrasts show the failures are missing verification guidance, not a runtime defect, so the fix belongs in the reusable textual procedure the agent already reads at that checkpoint. Prior attempts targeted core-source runtime/timing (deadline turn control, bash default timeout) and regressed passing tasks; this pivots to the untouched shared-skill layer that does not alter the tool schema or runtime behavior.",
+    "predicted_fixes": [
+      "sab_35 repeat_0: guidance step 4 prompts the agent to check that rsp_peaks sampling_rate matches the 100 Hz data (or explicitly confirm the default), reproducing the passing repeat's explicit sampling_rate=100.",
+      "sab_35 repeat_2: guidance step 5 prompts the agent to confirm which input file the task names, avoiding the wrong bio_resting_5min_100hz.csv selection.",
+      "sab_16 repeat_0: guidance step 3 prompts the agent to confirm legacy-vs-new fingerprint API equivalence on the full input (not ~20 samples), surfacing the compound-set divergence before finishing.",
+      "Broader task-solution failures: steps 1-2 and 6 prompt an independent re-check of the written output file's schema/values against the task's written requirements, reducing circular self-validation."
+    ],
+    "regression_risks": [
+      "The skill body is model-visible only when the agent reads it during validation; passing-task agents already perform extensive validation, but the added checks could add a few extra tool calls on long tasks (small risk of pushing a near-limit pass toward timeout).",
+      "Step 3's 'prefer the canonical/legacy API' could mislead on tasks where the newer API is actually correct; it is mitigated by anchoring the preference to 'the canonical form used by the library's own documentation' and by requiring full-input equivalence confirmation.",
+      "No runtime/schema change, so no build or CLI regression is expected (candidate checker npm-ci-offline/build-offline/pi-cli-smoke passed)."
+    ],
+    "targeted_checks": [
+      "resource-preflight: verify-work skill frontmatter valid (name matches directory, description present, <=1024 chars).",
+      "skill-load-smoke: skill loads and is surfaced with name/description/location in the system prompt via formatSkillsForPrompt.",
+      "Task-level falsification: re-run scienceagentbench-sab_35 and confirm the agent's written script passes sampling_rate=100 to nk.rsp_peaks (or explicitly confirms the default matches the data); re-run scienceagentbench-sab_16 and confirm the agent verifies fingerprint API equivalence on the full input before finishing."
+    ],
+    "analysis_tags": [
+      "shared-skill",
+      "verification-guidance",
+      "task-solution-failures",
+      "within-task-contrast",
+      "sab_35",
+      "sab_16"
+    ]
+  }
+}

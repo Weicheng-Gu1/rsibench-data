@@ -1,0 +1,395 @@
+{
+  "schema_version": 2,
+  "purpose": "Falsifiable cross-round memory without controller-defined semantic mechanism classes. The Meta-agent owns causal interpretation.",
+  "attempts": [
+    {
+      "candidate_id": "round-01",
+      "status": "rejected",
+      "reason": "direct_full_training_pass1_screen_rejected",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "deadline-aware-turn-control",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [
+          "PI_SRC_HARNESS_RUNTIME"
+        ],
+        "files": [
+          "packages/agent/src/agent-loop.ts",
+          "packages/agent/src/types.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=scienceagentbench-sab_67; failure_repeat=1; action=agent spent 29 turns exploring (read AGENTS.md, list files, numpy inspection, web searches) and never wrote the required pred_results output before the wall-clock deadline; verifier=AgentTimeoutError: Agent execution timed out after 3600.0 seconds -> reward 0; pass_repeat=2",
+          "task=scienceagentbench-sab_15; failure_repeat=0; action=XGBoost/LightGBM hyperparameter tuning loop over bash (actions 10-36) never wrote the prediction output file; verifier=AgentTimeoutError after 3600.0 seconds -> reward 0; pass_repeat=none",
+          "/app/pi-source-evidence/references/31f2f8e21fcd33a7-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/3d48b0d515c76aec-training-failures.json",
+          "/app/pi-source-evidence/references/c0a14012e32b48c6-scienceagentbench-sab_67.md",
+          "/app/pi-source-evidence/references/bcbccef6c4b261a8-scienceagentbench-sab_15.md"
+        ],
+        "root_cause": "The agent loop has no awareness of the wall-clock deadline enforced by the external task harness. In timeout trajectories the model keeps exploring or tuning and never commits a best-effort output, so the harness kills the run at 3600s with reward 0 even though the model had a usable result in hand.",
+        "mechanism": "Track per-run elapsed wall-clock time (Date.now() captured at runLoop start). Before every provider request, streamAssistantResponse calls appendDeadlineReminder, which appends an escalating system-prompt reminder once elapsed time crosses 85% (~51 min) and 95% (~57 min) of the 3600s default budget (configurable via AgentLoopConfig.timeBudgetMs; 0 disables). The reminder tells the model to stop exploring, write the required output file(s) with its current best result, and finish. It is request-local (never mutates stored session state) and fires only on turns after the threshold, so it reaches the model on the default Pi task-agent path (sdk.ts -> Agent -> runAgentLoop) with no wiring changes to frozen sdk assembly.",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "PI_SRC_AGENT_LOOP owns turn progression and stopping, and deadline-aware turn control is an explicitly allowed source capability addition. streamAssistantResponse is the last step before the provider handoff, so the injected reminder is guaranteed model-visible on the default execution path without touching frozen sdk.ts or provider serialization. The 85%/95% thresholds are placed above the maximum passing training duration (2727s) to avoid regressing current passes.",
+        "predicted_fixes": [
+          "Timeout trajectories (sab_15 x3, sab_18 r0, sab_21 r0/r1, sab_34 r0, sab_40 x3, sab_67 r1) receive escalating finalize reminders before the 3600s wall, so the model writes best-effort output instead of being killed with no output file.",
+          "No currently-passing training trajectory is disturbed: all pass durations are below the 3060s warn threshold.",
+          "The reminder is request-local, so session history and stored system prompt are unchanged."
+        ],
+        "regression_risks": [
+          "A slow-but-correct run exceeding ~51 minutes could finalize early with a wrong answer (no such case in the frozen training split; max pass duration is 2727s).",
+          "Long interactive sessions receive the same reminder after ~51 minutes of a single run.",
+          "Adds a short reminder to the system prompt on late turns (negligible token cost)."
+        ],
+        "targeted_checks": [
+          "agent-loop",
+          "Unit-level check: fake Date.now() just below/above 85% and 95% of timeBudgetMs and assert appendDeadlineReminder injects the reminder into the system prompt passed to the stream function (and omits it before the threshold)."
+        ],
+        "analysis_tags": [
+          "deadline-aware-turn-control",
+          "agent-timeout",
+          "cross-task-pattern",
+          "source-capability"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.27777777777777773,
+        "candidate_score": 0.08333333333333333,
+        "delta": -0.19444444444444442,
+        "partial_candidate_score": 0.08333333333333333,
+        "partial_delta": -0.19444444444444442,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "scienceagentbench-sab_1",
+          "scienceagentbench-sab_101",
+          "scienceagentbench-sab_16",
+          "scienceagentbench-sab_35"
+        ],
+        "improved_tasks": [
+          "scienceagentbench-sab_67"
+        ],
+        "regressed_tasks": [
+          "scienceagentbench-sab_1",
+          "scienceagentbench-sab_101",
+          "scienceagentbench-sab_16",
+          "scienceagentbench-sab_35"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_pass1_screen_rejected",
+        "baseline_score": 0.27777777777777773,
+        "candidate_score": 0.08333333333333333,
+        "delta": -0.19444444444444442,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "scienceagentbench-sab_1",
+          "scienceagentbench-sab_101",
+          "scienceagentbench-sab_16",
+          "scienceagentbench-sab_35"
+        ],
+        "improved_tasks": [
+          "scienceagentbench-sab_67"
+        ],
+        "regressed_tasks": [
+          "scienceagentbench-sab_1",
+          "scienceagentbench-sab_101",
+          "scienceagentbench-sab_16",
+          "scienceagentbench-sab_35"
+        ],
+        "candidate_changed_files": [
+          "packages/agent/src/agent-loop.ts",
+          "packages/agent/src/types.ts"
+        ],
+        "validation_failure": null,
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/volume/ywan/yss/rsibench-master/runs/formal-science-deepseek-v4-pro-nv-meta-same-pi-skyinfer-8w-full-18-direct-g5-tr3-te3-20260830T171102Z/cells/science/deepseek-v4-pro-nv/pi/attempts/1/pi-source-evolution/controller/records/round-01"
+    },
+    {
+      "candidate_id": "round-02",
+      "status": "rejected",
+      "reason": "direct_full_training_severe_task_regression",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "bash-default-timeout",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_TOOL_RUNTIME",
+        "compound_modules": [],
+        "files": [
+          "packages/coding-agent/src/core/tools/bash.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=scienceagentbench-sab_34; failure_repeat=0; action=final bash tool call `grep -rl \"hrv_analysis_pred\" / 2>/dev/null | head -20` issued with no timeout and no toolResult ever returned (trajectory ends mid-command); verifier=AgentTimeoutError: Agent execution timed out after 3600.0 seconds -> reward 0; pass_repeat=none",
+          "task=scienceagentbench-sab_67; failure_repeat=1; action=final bash tool call `grep -R \"fit_result_conscientiousness|CogSci_pattern_high_sim\" / 2>/dev/null | head -50` issued with no timeout and no toolResult ever returned; verifier=AgentTimeoutError after 3600.0 seconds -> reward 0; pass_repeat=2",
+          "task=scienceagentbench-sab_15; failure_repeat=2; action=unbounded hyperparameter-tuning script ran 1486s on a single bash call with no effective timeout; verifier=AgentTimeoutError after 3600.0 seconds -> reward 0; pass_repeat=none",
+          "task=scienceagentbench-sab_21; failure_repeat=1; action=geopandas buffer operation ran 1629s on a single bash call with no timeout; verifier=AgentTimeoutError after 3600.0 seconds -> reward 0; pass_repeat=none",
+          "/app/pi-source-evidence/references/31570432651898d9-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/83f6818348c89191-trajectory.jsonl",
+          "/app/pi-source-evidence/references/5d67e45ad801b567-trajectory.jsonl"
+        ],
+        "root_cause": "The bash tool executes commands with no default timeout: when a command does not specify a timeout, resolveTimeoutMs returns undefined and the spawned process is allowed to run unbounded. In the timeout trajectories the model issues commands that never terminate (filesystem-wide greps over /, unbounded RandomizedSearchCV/XGBoost tuning, slow geopandas operations) without a timeout argument, so the agent loop blocks on a result that never arrives and the external harness kills the whole run at 3600s with reward 0 even though the model had budget and often a usable partial result.",
+        "mechanism": "Add DEFAULT_TIMEOUT_SECONDS = 600 to packages/coding-agent/src/core/tools/bash.ts and an optional BashToolOptions.defaultTimeoutSeconds override. The bash tool's execute() computes effectiveTimeout = timeout ?? options?.defaultTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS and passes it to ops.exec, so every bash tool call is bounded. A runaway command is killed at 600s and its tool result becomes an error 'Command timed out after 600 seconds' (with any partial stdout preserved), which the model observes and can react to. Explicit timeout arguments still override the default (up to the existing max), and the interactive/RPC executeBash path (bash-executor.ts) is untouched because the default is applied inside the tool's execute, not in createLocalBashOperations.",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "PI_SRC_TOOL_RUNTIME owns bash tool execution (packages/coding-agent/src/core/tools/bash.ts). The defect is mechanical unbounded command execution, not missing task guidance, so it belongs in the tool runtime rather than shared prompt/rules/skills. The bash tool is the default execution path for every task-agent command (trajectories show tool calls named 'bash' and mechanism evidence shows custom_tools_registered=[]), so the fix reaches the default Pi task-agent path with no wiring changes to frozen sdk assembly.",
+        "predicted_fixes": [
+          "Timeout trajectories that end with an unterminated filesystem-wide grep (sab_34 r0, sab_67 r1) now receive 'Command timed out after 600 seconds' after 600s instead of hanging ~40+ minutes, leaving the model ~50 minutes to scope the search and write the required pred_results output.",
+          "Unbounded single-call tuning scripts (sab_15 r2 1486s, sab_18 r0 1442s, sab_21 r1 1629s, sab_40 r1 1082s, sab_40 r2 1033s) are capped at 600s and reported as timed out, forcing the model to simplify or commit instead of silently exhausting the budget.",
+          "No currently-passing trajectory is disturbed: the longest single command across all passing rollouts is 310s, below the 600s default."
+        ],
+        "regression_risks": [
+          "A legitimately long command in an unseen task (e.g. a model training that needs more than 600s) would now be killed and reported as timed out; the model must re-issue it with an explicit larger timeout.",
+          "The default applies to every bash call, so a command that would have completed at, say, 700s now fails at 600s and wastes that time before a retry.",
+          "The model could misread the new default and under-specify timeouts for genuinely long commands."
+        ],
+        "targeted_checks": [
+          "tools",
+          "Unit-level: bash tool with `sleep 700` and no timeout returns an error containing 'Command timed out after 600 seconds' in approximately 600s; `sleep 5` with no timeout completes normally; explicit `timeout: 5` on `sleep 700` still returns 'Command timed out after 5 seconds'.",
+          "Task-level falsification: re-run a timeout task (scienceagentbench-sab_34 or scienceagentbench-sab_67) and verify the trajectory no longer ends with an unterminated bash call - the hung command is reported as timed out and the agent either completes with pred_results output or fails as a task-solution failure rather than an unterminated-command hang."
+        ],
+        "analysis_tags": [
+          "bash-default-timeout",
+          "agent-timeout",
+          "tool-runtime",
+          "runaway-command",
+          "cross-task-pattern"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.27777777777777773,
+        "candidate_score": 0.16666666666666666,
+        "delta": -0.11111111111111108,
+        "partial_candidate_score": 0.16666666666666666,
+        "partial_delta": -0.11111111111111108,
+        "fail_to_pass": [
+          "scienceagentbench-sab_40"
+        ],
+        "pass_to_fail": [
+          "scienceagentbench-sab_1",
+          "scienceagentbench-sab_35"
+        ],
+        "improved_tasks": [
+          "scienceagentbench-sab_40"
+        ],
+        "regressed_tasks": [
+          "scienceagentbench-sab_1",
+          "scienceagentbench-sab_101",
+          "scienceagentbench-sab_35"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_severe_task_regression",
+        "baseline_score": 0.27777777777777773,
+        "candidate_score": 0.16666666666666666,
+        "delta": -0.11111111111111108,
+        "fail_to_pass": [
+          "scienceagentbench-sab_40"
+        ],
+        "pass_to_fail": [
+          "scienceagentbench-sab_1",
+          "scienceagentbench-sab_35"
+        ],
+        "improved_tasks": [
+          "scienceagentbench-sab_40"
+        ],
+        "regressed_tasks": [
+          "scienceagentbench-sab_1",
+          "scienceagentbench-sab_101",
+          "scienceagentbench-sab_35"
+        ],
+        "candidate_changed_files": [
+          "packages/coding-agent/src/core/tools/bash.ts"
+        ],
+        "validation_failure": null,
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/volume/ywan/yss/rsibench-master/runs/formal-science-deepseek-v4-pro-nv-meta-same-pi-skyinfer-8w-full-18-direct-g5-tr3-te3-20260830T171102Z/cells/science/deepseek-v4-pro-nv/pi/attempts/1/pi-source-evolution/controller/records/round-02"
+    },
+    {
+      "candidate_id": "round-03",
+      "status": "rejected",
+      "reason": "direct_full_training_pass1_screen_rejected",
+      "performance_rejected": true,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "bash-default-timeout-600-silent",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_TOOL_RUNTIME",
+        "compound_modules": [],
+        "files": [
+          "packages/coding-agent/src/core/tools/bash.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=scienceagentbench-sab_40; failure_repeat=1; action=unbounded python feature-engineering script ran 1082s on a single bash call with no timeout argument; verifier=AgentTimeoutError: Agent execution timed out after 3600.0 seconds -> reward 0; pass_repeat=none",
+          "task=scienceagentbench-sab_67; failure_repeat=1; action=final bash call `grep -R \"fit_result_conscientiousness|CogSci_pattern_high_sim\" / 2>/dev/null | head -50` issued with no timeout and no toolResult ever returned; verifier=AgentTimeoutError after 3600.0 seconds -> reward 0; pass_repeat=2",
+          "task=scienceagentbench-sab_34; failure_repeat=0; action=final bash call `grep -rl \"hrv_analysis_pred\" / 2>/dev/null | head -20` issued with no timeout and no toolResult ever returned; verifier=AgentTimeoutError after 3600.0 seconds -> reward 0; pass_repeat=none",
+          "/app/pi-source-evidence/references/ee4cf3d844671b16-training-opportunity-index.json",
+          "/app/pi-source-evidence/references/9bad4122a52bc61c-evolution-history.json",
+          "/app/pi-source-evidence/references/68e0b427200ee1f9-trajectory.jsonl",
+          "/app/pi-source-evidence/references/e4c02689999d4e7d-trajectory.jsonl",
+          "/app/pi-source-evidence/references/5d67e45ad801b567-trajectory.jsonl",
+          "/app/pi-source-evidence/references/83f6818348c89191-trajectory.jsonl"
+        ],
+        "root_cause": "The bash tool executes commands with no default timeout: resolveTimeoutMs(undefined) returns undefined, so a command issued without an explicit timeout runs unbounded. In the timeout trajectories the model issues commands that never terminate (unscoped filesystem-wide greps from '/', unbounded feature-engineering/tuning scripts) with no timeout argument, so the agent loop blocks on a tool result that never arrives and the external harness kills the whole run at 3600s with reward 0 even though the model had budget and often a usable partial result. Passing trajectories never have a single command exceed ~310s, so a modest default ceiling is provably inert on them.",
+        "mechanism": "Add DEFAULT_TIMEOUT_SECONDS = 600 to packages/coding-agent/src/core/tools/bash.ts and compute effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS inside createBashToolDefinition.execute(), passing it to ops.exec. Every bash tool call without an explicit timeout is now bounded at 600s; a runaway command is killed and reported as 'Command timed out after 600 seconds' with any partial output preserved, which the model observes and can react to while most of the wall-clock budget remains. Explicit timeout arguments still win (up to the existing max), the tool schema/description is unchanged so model-visible behavior on passing tasks is identical, and the interactive/RPC executeBash path (bash-executor.ts) is untouched because the default is applied inside the tool's execute on the default task-agent path (agent-session builds tools via createAllToolDefinitions -> createBashToolDefinition; mechanism evidence shows custom_tools_registered=[] and tool calls named 'bash').",
+        "evidence_basis": "cross_task_pattern",
+        "prior_attempt_disposition": "improve_accepted",
+        "why_this_component": "PI_SRC_TOOL_RUNTIME owns bash tool execution (packages/coding-agent/src/core/tools/bash.ts). The defect is mechanical unbounded command execution, not missing task guidance, so it belongs in the tool runtime rather than shared prompt/rules/skills. The bash tool's execute() is the default execution path for every task-agent command, so the fix reaches the default Pi task-agent path with no wiring changes to frozen sdk assembly.",
+        "predicted_fixes": [
+          "Timeout trajectories that end with an unterminated command (sab_40 r1/r2 1082s/1033s scripts, sab_34 r0 and sab_67 r1 filesystem-wide greps, sab_15 r2 1486s script) now receive 'Command timed out after 600 seconds' after 600s instead of hanging until the 3600s harness kill, leaving the model most of the budget to scope the work and write the required pred_results output.",
+          "No passing training trajectory is disturbed: across all 10 passing rollouts the longest single command is ~310s, below the 600s default, so the default never fires on a passing run.",
+          "Explicit timeout arguments and the interactive/RPC executeBash path are unchanged."
+        ],
+        "regression_risks": [
+          "On unseen tasks, a legitimately long command (>600s) issued without an explicit timeout would now be killed and reported as timed out; the model can re-issue it with an explicit timeout.",
+          "The default is a silent safety net (the schema description still says no default timeout), so the model is not pre-informed of the 600s ceiling."
+        ],
+        "targeted_checks": [
+          "tools",
+          "Task-level falsification: re-run scienceagentbench-sab_40 (or sab_34/sab_67) and verify the trajectory no longer ends with an unterminated bash call - the runaway command is reported as timed out and the agent either writes pred_results output or fails as a task-solution failure rather than a silent hang."
+        ],
+        "analysis_tags": [
+          "bash-default-timeout",
+          "unbounded-command",
+          "agent-timeout",
+          "tool-runtime",
+          "cross-task-pattern"
+        ]
+      },
+      "attribution": {
+        "baseline_score": 0.27777777777777773,
+        "candidate_score": 0.16666666666666666,
+        "delta": -0.11111111111111108,
+        "partial_candidate_score": 0.16666666666666666,
+        "partial_delta": -0.11111111111111108,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "scienceagentbench-sab_16",
+          "scienceagentbench-sab_35",
+          "scienceagentbench-sab_67"
+        ],
+        "improved_tasks": [],
+        "regressed_tasks": [
+          "scienceagentbench-sab_16",
+          "scienceagentbench-sab_35",
+          "scienceagentbench-sab_67"
+        ],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": {
+        "delivery": "next_round_same_recursive_meta_agent",
+        "test_trajectories_withheld": true,
+        "gate_reason": "direct_full_training_pass1_screen_rejected",
+        "baseline_score": 0.27777777777777773,
+        "candidate_score": 0.16666666666666666,
+        "delta": -0.11111111111111108,
+        "fail_to_pass": [],
+        "pass_to_fail": [
+          "scienceagentbench-sab_16",
+          "scienceagentbench-sab_35",
+          "scienceagentbench-sab_67"
+        ],
+        "improved_tasks": [],
+        "regressed_tasks": [
+          "scienceagentbench-sab_16",
+          "scienceagentbench-sab_35",
+          "scienceagentbench-sab_67"
+        ],
+        "candidate_changed_files": [
+          "packages/coding-agent/src/core/tools/bash.ts"
+        ],
+        "validation_failure": null,
+        "required_response": "Explain which prediction was falsified, then improve the mechanism only if the measured flips still support it; otherwise rollback and pivot to a different causal hypothesis."
+      },
+      "controller_record": "/volume/ywan/yss/rsibench-master/runs/formal-science-deepseek-v4-pro-nv-meta-same-pi-skyinfer-8w-full-18-direct-g5-tr3-te3-20260830T171102Z/cells/science/deepseek-v4-pro-nv/pi/attempts/1/pi-source-evolution/controller/records/round-03"
+    },
+    {
+      "candidate_id": "meta-agent-smoke",
+      "status": "rejected",
+      "reason": "qualification_passed",
+      "performance_rejected": false,
+      "validation_failed": false,
+      "meta_failed": false,
+      "manifest": {
+        "schema_version": 1,
+        "change_id": "meta-agent-smoke-qualification",
+        "layer": "agent_core_source",
+        "primary_module": "PI_SRC_AGENT_LOOP",
+        "compound_modules": [],
+        "files": [
+          "packages/agent/src/stream-fn.ts"
+        ],
+        "requires_rebuild": true,
+        "failure_evidence": [
+          "task=meta-agent-smoke; failure_repeat=1; action=qualification_edit: insert exactly one harmless source comment as the first line of packages/agent/src/stream-fn.ts; verifier=controller qualification requires proving the complete recursive edit, protocol, build, and smoke path; pass_repeat=none"
+        ],
+        "root_cause": "This is a controller-driven smoke qualification, not a performance objective. The candidate must demonstrate the complete recursive edit/validation path by introducing a single harmless source comment with no runtime behavior change.",
+        "mechanism": "Insert the exact required comment line '// RSIBench meta-agent smoke qualification edit. Do not change runtime behavior.' as the first line of packages/agent/src/stream-fn.ts. The comment is inert and does not alter any import, declaration, or runtime code path.",
+        "evidence_basis": "runtime_failure",
+        "prior_attempt_disposition": "new_direction",
+        "why_this_component": "The qualification_task designates packages/agent/src/stream-fn.ts (primary_module PI_SRC_AGENT_LOOP) as the required edit location; the comment-only edit lives in an owned module path and exercises the edit, build, and CLI smoke pipeline without touching frozen or generated files.",
+        "predicted_fixes": [
+          "The candidate worktree now contains a real cumulative Git diff (the required comment line).",
+          "The frozen candidate checker passes npm-ci-offline, build-offline, and pi-cli-smoke, proving the edit/protocol/build/smoke path end-to-end."
+        ],
+        "regression_risks": [],
+        "targeted_checks": [
+          "pi-cli-smoke"
+        ],
+        "analysis_tags": [
+          "smoke-qualification",
+          "comment-only",
+          "no-runtime-change"
+        ]
+      },
+      "attribution": {
+        "baseline_score": null,
+        "candidate_score": null,
+        "delta": null,
+        "partial_candidate_score": null,
+        "partial_delta": null,
+        "fail_to_pass": [],
+        "pass_to_fail": [],
+        "improved_tasks": [],
+        "regressed_tasks": [],
+        "validation_failure": null
+      },
+      "performance_attempts": [],
+      "performance_feedback": null,
+      "controller_record": "/volume/ywan/yss/rsibench-master/runs/formal-science-deepseek-v4-pro-nv-meta-same-pi-skyinfer-8w-full-18-direct-g5-tr3-te3-20260830T171102Z/cells/science/deepseek-v4-pro-nv/pi/attempts/1/pi-source-evolution/controller/records/meta-agent-smoke"
+    }
+  ],
+  "active_attempts_since_last_accept": [
+    "round-01",
+    "round-02",
+    "round-03",
+    "meta-agent-smoke"
+  ],
+  "prompt_policy": {
+    "performance_attempts": 0,
+    "performance_rejections": 0,
+    "blocked_after_no_lift": false,
+    "rejected_change_ids": [],
+    "required_action": "prompt_remains_eligible_with_causal_evidence"
+  }
+}

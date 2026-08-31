@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "change_id": "bash-default-timeout-600-silent",
+  "layer": "agent_core_source",
+  "primary_module": "PI_SRC_TOOL_RUNTIME",
+  "compound_modules": [],
+  "files": [
+    "packages/coding-agent/src/core/tools/bash.ts"
+  ],
+  "requires_rebuild": true,
+  "failure_evidence": [
+    "task=scienceagentbench-sab_40; failure_repeat=1; action=unbounded python feature-engineering script ran 1082s on a single bash call with no timeout argument; verifier=AgentTimeoutError: Agent execution timed out after 3600.0 seconds -> reward 0; pass_repeat=none",
+    "task=scienceagentbench-sab_67; failure_repeat=1; action=final bash call `grep -R \"fit_result_conscientiousness|CogSci_pattern_high_sim\" / 2>/dev/null | head -50` issued with no timeout and no toolResult ever returned; verifier=AgentTimeoutError after 3600.0 seconds -> reward 0; pass_repeat=2",
+    "task=scienceagentbench-sab_34; failure_repeat=0; action=final bash call `grep -rl \"hrv_analysis_pred\" / 2>/dev/null | head -20` issued with no timeout and no toolResult ever returned; verifier=AgentTimeoutError after 3600.0 seconds -> reward 0; pass_repeat=none",
+    "/app/pi-source-evidence/references/ee4cf3d844671b16-training-opportunity-index.json",
+    "/app/pi-source-evidence/references/9bad4122a52bc61c-evolution-history.json",
+    "/app/pi-source-evidence/references/68e0b427200ee1f9-trajectory.jsonl",
+    "/app/pi-source-evidence/references/e4c02689999d4e7d-trajectory.jsonl",
+    "/app/pi-source-evidence/references/5d67e45ad801b567-trajectory.jsonl",
+    "/app/pi-source-evidence/references/83f6818348c89191-trajectory.jsonl"
+  ],
+  "root_cause": "The bash tool executes commands with no default timeout: resolveTimeoutMs(undefined) returns undefined, so a command issued without an explicit timeout runs unbounded. In the timeout trajectories the model issues commands that never terminate (unscoped filesystem-wide greps from '/', unbounded feature-engineering/tuning scripts) with no timeout argument, so the agent loop blocks on a tool result that never arrives and the external harness kills the whole run at 3600s with reward 0 even though the model had budget and often a usable partial result. Passing trajectories never have a single command exceed ~310s, so a modest default ceiling is provably inert on them.",
+  "mechanism": "Add DEFAULT_TIMEOUT_SECONDS = 600 to packages/coding-agent/src/core/tools/bash.ts and compute effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_SECONDS inside createBashToolDefinition.execute(), passing it to ops.exec. Every bash tool call without an explicit timeout is now bounded at 600s; a runaway command is killed and reported as 'Command timed out after 600 seconds' with any partial output preserved, which the model observes and can react to while most of the wall-clock budget remains. Explicit timeout arguments still win (up to the existing max), the tool schema/description is unchanged so model-visible behavior on passing tasks is identical, and the interactive/RPC executeBash path (bash-executor.ts) is untouched because the default is applied inside the tool's execute on the default task-agent path (agent-session builds tools via createAllToolDefinitions -> createBashToolDefinition; mechanism evidence shows custom_tools_registered=[] and tool calls named 'bash').",
+  "evidence_basis": "cross_task_pattern",
+  "prior_attempt_disposition": "improve_accepted",
+  "why_this_component": "PI_SRC_TOOL_RUNTIME owns bash tool execution (packages/coding-agent/src/core/tools/bash.ts). The defect is mechanical unbounded command execution, not missing task guidance, so it belongs in the tool runtime rather than shared prompt/rules/skills. The bash tool's execute() is the default execution path for every task-agent command, so the fix reaches the default Pi task-agent path with no wiring changes to frozen sdk assembly.",
+  "predicted_fixes": [
+    "Timeout trajectories that end with an unterminated command (sab_40 r1/r2 1082s/1033s scripts, sab_34 r0 and sab_67 r1 filesystem-wide greps, sab_15 r2 1486s script) now receive 'Command timed out after 600 seconds' after 600s instead of hanging until the 3600s harness kill, leaving the model most of the budget to scope the work and write the required pred_results output.",
+    "No passing training trajectory is disturbed: across all 10 passing rollouts the longest single command is ~310s, below the 600s default, so the default never fires on a passing run.",
+    "Explicit timeout arguments and the interactive/RPC executeBash path are unchanged."
+  ],
+  "regression_risks": [
+    "On unseen tasks, a legitimately long command (>600s) issued without an explicit timeout would now be killed and reported as timed out; the model can re-issue it with an explicit timeout.",
+    "The default is a silent safety net (the schema description still says no default timeout), so the model is not pre-informed of the 600s ceiling."
+  ],
+  "targeted_checks": [
+    "tools",
+    "Task-level falsification: re-run scienceagentbench-sab_40 (or sab_34/sab_67) and verify the trajectory no longer ends with an unterminated bash call - the runaway command is reported as timed out and the agent either writes pred_results output or fails as a task-solution failure rather than a silent hang."
+  ],
+  "analysis_tags": [
+    "bash-default-timeout",
+    "unbounded-command",
+    "agent-timeout",
+    "tool-runtime",
+    "cross-task-pattern"
+  ]
+}
